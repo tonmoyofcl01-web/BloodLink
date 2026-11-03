@@ -24,10 +24,8 @@ test('registration validates public input and creates no privileged fields', asy
     emailVerificationToken: { create: async ({ data }) => tokens.push(data) },
     $transaction: async (operation) => operation(prisma),
   };
-  const app = createApp({ prisma, env });
-  const originalInfo = console.info;
-  console.info = () => {};
-  try {
+  const app = createApp({ prisma, env, emailAdapter: async () => {} });
+  {
     await withServer(app, async (base) => {
       const injected = await fetch(`${base}/api/v1/auth/register`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
@@ -47,7 +45,7 @@ test('registration validates public input and creates no privileged fields', asy
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ email: 'Person@Example.com', password: 'long-enough-password', fullName: 'Person' }),
       });
-      assert.equal(response.status, 201);
+      assert.equal(response.status, 202);
       assert.equal(created[0].email, 'person@example.com');
       assert.equal('role' in created[0], false);
       assert.equal('adminAccount' in created[0], false);
@@ -55,7 +53,33 @@ test('registration validates public input and creates no privileged fields', asy
       assert.equal(tokens.length, 1);
       assert.match(tokens[0].tokenHash, /^[a-f0-9]{64}$/);
     });
-  } finally { console.info = originalInfo; }
+  }
+});
+
+test('registration and resend fail safely when SMTP is not configured without checking accounts', async () => {
+  let lookups = 0;
+  let creates = 0;
+  const unavailable = async () => {};
+  unavailable.isConfigured = false;
+  const prisma = {
+    user: { create: async () => { creates += 1; }, findUnique: async () => { lookups += 1; } },
+  };
+  await withServer(createApp({ prisma, env, emailAdapter: unavailable }), async (base) => {
+    const register = await fetch(`${base}/api/v1/auth/register`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'person@example.com', fullName: 'Person', password: 'long-enough-password' }),
+    });
+    const resend = await fetch(`${base}/api/v1/auth/resend-verification`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'person@example.com' }),
+    });
+    assert.equal(register.status, 503);
+    assert.equal(resend.status, 503);
+    assert.equal((await register.json()).error.code, 'EMAIL_DELIVERY_UNAVAILABLE');
+    assert.equal((await resend.json()).error.code, 'EMAIL_DELIVERY_UNAVAILABLE');
+    assert.equal(creates, 0);
+    assert.equal(lookups, 0);
+  });
 });
 
 test('login sets an HttpOnly cookie and logout revokes its server-side session', async () => {
@@ -89,5 +113,24 @@ test('login sets an HttpOnly cookie and logout revokes its server-side session',
     assert.equal(logout.status, 204);
     assert.equal(revoked.where.secretHash, sessionData.secretHash);
     assert.ok(revoked.data.revokedAt instanceof Date);
+  });
+});
+
+test('login identifies an unverified account only after its password is correct', async () => {
+  const passwordHash = await bcrypt.hash('correct horse battery', 4);
+  const prisma = {
+    user: { findUnique: async () => ({ id: 'pending-user', email: 'person@example.com', fullName: 'Person', passwordHash, status: 'PENDING_VERIFICATION', deletedAt: null }) },
+  };
+  await withServer(createApp({ prisma, env }), async (base) => {
+    const request = (password) => fetch(`${base}/api/v1/auth/login`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'person@example.com', password }),
+    });
+    const wrongPassword = await request('wrong-password');
+    assert.equal(wrongPassword.status, 401);
+    assert.equal((await wrongPassword.json()).error.code, 'INVALID_CREDENTIALS');
+    const correctPassword = await request('correct horse battery');
+    assert.equal(correctPassword.status, 403);
+    assert.equal((await correctPassword.json()).error.code, 'EMAIL_NOT_VERIFIED');
   });
 });

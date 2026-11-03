@@ -18,7 +18,7 @@ Requirements: Node.js 20+, npm, and MySQL 8.0+.
 3. Start both services with `npm run dev`. Vite proxies `/api/v1` to Express. The default API base is `/api/v1`; set `VITE_API_URL` only when hosting the API on a different origin.
 4. For the first administrator, configure `ADMIN_BOOTSTRAP_EMAIL` and a unique `ADMIN_BOOTSTRAP_PASSWORD` (at least 20 characters), run `npm run admin:bootstrap` once, then remove those bootstrap values.
 
-Development email verification links are logged by the development-only email adapter. Production requires authenticated SMTP; see [deployment guide](docs/DEPLOYMENT.md).
+Email verification uses authenticated SMTP in development when configured and in production always. Registration and resend return a configuration error when local SMTP is missing; verification URLs are never written to application logs. See [deployment guide](docs/DEPLOYMENT.md).
 Production also requires a TLS Redis-compatible `REDIS_URL` for shared rate limiting; local development uses memory unless you opt into a local Redis URL. Setup steps are in the deployment guide.
 
 ## Release readiness
@@ -27,7 +27,7 @@ See [deployment guide](docs/DEPLOYMENT.md) for production environment variables,
 
 ## Checks
 
-- `npm test` — API and unit tests
+- `npm test` — client verification-effect guard and API/unit tests
 - `npm run test:db` — MySQL integration tests using synthetic data
 - `npm run build` — production client build
 - `npm --workspace server exec prisma migrate status` — migration status

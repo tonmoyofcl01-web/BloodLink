@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { runVerificationOnce } from './auth/verification-once.js';
 import RequestWorkspace from './features/requests/RequestWorkspace.jsx';
 import DonorDiscovery from './features/discovery/DonorDiscovery.jsx';
 import MyOpportunities from './features/donors/MyOpportunities.jsx';
@@ -17,6 +18,9 @@ export default function App() {
   const [verificationEmail, setVerificationEmail] = useState('');
   const [resendBusy, setResendBusy] = useState(false);
   const [dark, setDark] = useState(() => window.localStorage.getItem('bloodlink-theme') === 'dark');
+  const verificationSubmitted = useRef(false);
+  const authSubmitInFlight = useRef(false);
+  const resendInFlight = useRef(false);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark);
@@ -26,14 +30,18 @@ export default function App() {
   useEffect(() => {
     const token = new URLSearchParams(window.location.search).get('token');
     if (window.location.pathname === '/verify-email' && token) {
-      fetch(`${API}/auth/verify-email`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }),
-      }).then(async (response) => {
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error?.message || 'Verification failed.');
-        setMessage('Email verified. You can now sign in.');
-        window.history.replaceState({}, '', '/');
-      }).catch((error) => setMessage(error.message));
+      // React StrictMode replays effects in development. Verification tokens are one-time
+      // credentials, so a replay would consume the token twice and replace success with an error.
+      runVerificationOnce(verificationSubmitted, () => {
+        fetch(`${API}/auth/verify-email`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }),
+        }).then(async (response) => {
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error?.message || 'Verification failed.');
+          setMessage('Email verified. You can now sign in.');
+          window.history.replaceState({}, '', '/');
+        }).catch((error) => setMessage(error.message));
+      });
     }
     fetch(`${API}/auth/me`, { credentials: 'include' })
       .then(async (response) => response.ok ? response.json() : null)
@@ -43,6 +51,8 @@ export default function App() {
 
   async function submit(event) {
     event.preventDefault();
+    if (authSubmitInFlight.current) return;
+    authSubmitInFlight.current = true;
     setMessage('');
     setBusy(true);
     const body = Object.fromEntries(new FormData(event.currentTarget).entries());
@@ -52,14 +62,19 @@ export default function App() {
         method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error?.message || 'Unable to complete request.');
+      if (!response.ok) {
+        if (mode === 'login' && data.error?.code === 'EMAIL_NOT_VERIFIED') setVerificationEmail(body.email);
+        throw new Error(data.error?.message || 'Unable to complete request.');
+      }
       if (data.user) setUser(data.user);
-      setMessage(mode === 'register' ? 'Account created. Check your email for verification instructions.' : 'Signed in successfully.');
+      setMessage(mode === 'register' ? data.message : 'Signed in successfully.');
     } catch (error) { setMessage(error.message); }
-    finally { setBusy(false); }
+    finally { authSubmitInFlight.current = false; setBusy(false); }
   }
 
   async function resendVerification() {
+    if (resendInFlight.current) return;
+    resendInFlight.current = true;
     setResendBusy(true);
     setMessage('');
     try {
@@ -68,7 +83,7 @@ export default function App() {
       if (!response.ok) throw new Error(data.error?.message || 'Could not resend verification instructions.');
       setMessage(data.message);
     } catch (error) { setMessage(error.message); }
-    finally { setResendBusy(false); }
+    finally { resendInFlight.current = false; setResendBusy(false); }
   }
 
   async function logout() {
@@ -98,10 +113,10 @@ export default function App() {
               {message && <p role="status" className="rounded-lg bg-slate-100 p-3 text-sm text-slate-700 dark:bg-slate-800 dark:text-slate-200">{message}</p>}
               <button disabled={busy} className="w-full rounded-xl bg-rose-700 px-5 py-3 font-semibold text-white hover:bg-rose-800 disabled:opacity-60">{busy ? 'Please wait…' : mode === 'register' ? 'Create account' : 'Sign in'}</button>
             </form>
-            <button onClick={() => { setMode(mode === 'register' ? 'login' : 'register'); setMessage(''); }} className="mt-5 text-sm font-medium text-rose-700 hover:underline dark:text-rose-300">
+            <button onClick={() => { setMode(mode === 'register' ? 'login' : 'register'); setVerificationEmail(''); setMessage(''); }} className="mt-5 text-sm font-medium text-rose-700 hover:underline dark:text-rose-300">
               {mode === 'register' ? 'Already have an account? Sign in' : 'New to BloodLink? Create an account'}
             </button>
-            {mode === 'register' && verificationEmail && <button type="button" onClick={resendVerification} disabled={resendBusy} className="ml-4 mt-5 text-sm font-medium text-teal-700 hover:underline disabled:opacity-50 dark:text-teal-300">{resendBusy ? 'Sending…' : 'Resend verification email'}</button>}
+            {verificationEmail && <button type="button" onClick={resendVerification} disabled={resendBusy} className="ml-4 mt-5 text-sm font-medium text-teal-700 hover:underline disabled:opacity-50 dark:text-teal-300">{resendBusy ? 'Sending…' : 'Resend verification email'}</button>}
           </div>
         </section>
       )}

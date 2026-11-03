@@ -7,6 +7,7 @@ import { generatePotentialMatches } from '../modules/matching/service.js';
 import { createNotifications, notifyRequestStatus } from '../modules/notifications/service.js';
 import { createApp } from '../app.js';
 import bcrypt from 'bcryptjs';
+import { hashSecret } from '../lib/crypto.js';
 
 test('configured MySQL database is reachable and all migrations are applied', async () => {
   const prisma = new PrismaClient();
@@ -143,6 +144,129 @@ test('blood groups, donor discovery filters, and request lifecycle work transact
   }
 });
 
+test('MySQL registration, verification, resend, token expiry, auth, and rate limits work end to end', async () => {
+  const prisma = new PrismaClient();
+  const runKey = randomUUID();
+  const email = `verification-${runKey}@example.invalid`;
+  const rateLimitEmail = `verification-limit-${runKey}@example.invalid`;
+  const emails = new Set([email, rateLimitEmail]);
+  const deliveries = new Map();
+  const deliveryCounts = new Map();
+  const app = createApp({
+    prisma,
+    env: { ...env, NODE_ENV: 'test', PORT: 0, CLIENT_ORIGIN: 'http://localhost:5173', SESSION_COOKIE_NAME: 'bloodlink_session', SESSION_COOKIE_SECURE: 'false' },
+    emailAdapter: async ({ email: recipient, url }) => {
+      deliveries.set(recipient, url);
+      deliveryCounts.set(recipient, (deliveryCounts.get(recipient) || 0) + 1);
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  let cookie;
+  const send = async (path, body) => {
+    const response = await fetch(`${base}/api/v1/auth/${path}`, {
+      method: 'POST', headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
+      body: JSON.stringify(body),
+    });
+    const setCookie = response.headers.get('set-cookie');
+    if (setCookie) cookie = setCookie.split(';')[0];
+    return { response, data: response.status === 204 ? null : await response.json() };
+  };
+  const extractToken = (recipient) => new URL(deliveries.get(recipient)).searchParams.get('token');
+  try {
+    const registration = await send('register', { email, fullName: 'Synthetic Verification', password: 'test-only-password-2026' });
+    assert.equal(registration.response.status, 202);
+    const firstToken = extractToken(email);
+    assert.ok(firstToken);
+    const firstRecord = await prisma.emailVerificationToken.findUnique({ where: { tokenHash: hashSecret(firstToken) } });
+    assert.ok(firstRecord);
+    assert.ok(firstRecord.expiresAt > new Date());
+    const pendingUser = await prisma.user.findUnique({ where: { email }, select: { status: true, emailVerifiedAt: true } });
+    assert.equal(pendingUser.status, 'PENDING_VERIFICATION');
+    assert.equal(pendingUser.emailVerifiedAt, null);
+
+    const unverifiedLogin = await send('login', { email, password: 'test-only-password-2026' });
+    assert.equal(unverifiedLogin.response.status, 403);
+    assert.equal(unverifiedLogin.data.error.code, 'EMAIL_NOT_VERIFIED');
+    const wrongPassword = await send('login', { email, password: 'wrong-test-password' });
+    assert.equal(wrongPassword.response.status, 401);
+
+    const duplicate = await send('register', { email, fullName: 'Synthetic Verification', password: 'test-only-password-2026' });
+    assert.equal(duplicate.response.status, 202);
+    assert.equal(duplicate.data.message, registration.data.message);
+    assert.equal(deliveryCounts.get(email), 1);
+    assert.match(duplicate.data.message, /If this address can be registered/);
+
+    const invalid = await send('verify-email', { token: `invalid-${randomUUID()}` });
+    assert.equal(invalid.response.status, 400);
+    assert.equal(invalid.data.error.code, 'INVALID_TOKEN');
+
+    await prisma.emailVerificationToken.update({ where: { id: firstRecord.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+    const expired = await send('verify-email', { token: firstToken });
+    assert.equal(expired.response.status, 400);
+    assert.equal(expired.data.error.code, 'TOKEN_EXPIRED');
+
+    const resend = await send('resend-verification', { email });
+    assert.equal(resend.response.status, 202);
+    assert.equal(deliveryCounts.get(email), 2);
+    assert.match(resend.data.message, /If this address belongs to an unverified account/);
+    const secondToken = extractToken(email);
+    assert.ok(secondToken);
+    assert.notEqual(secondToken, firstToken);
+    const replaced = await prisma.emailVerificationToken.findUnique({ where: { tokenHash: hashSecret(firstToken) } });
+    const secondRecord = await prisma.emailVerificationToken.findUnique({ where: { tokenHash: hashSecret(secondToken) } });
+    assert.ok(replaced.usedAt);
+    assert.ok(secondRecord && secondRecord.expiresAt > new Date());
+
+    const invalidated = await send('verify-email', { token: firstToken });
+    assert.equal(invalidated.response.status, 400);
+    assert.equal(invalidated.data.error.code, 'TOKEN_ALREADY_USED');
+    const verified = await send('verify-email', { token: secondToken });
+    assert.equal(verified.response.status, 200);
+    const activeUser = await prisma.user.findUnique({ where: { email }, select: { status: true, emailVerifiedAt: true } });
+    assert.equal(activeUser.status, 'ACTIVE');
+    assert.ok(activeUser.emailVerifiedAt);
+    const reused = await send('verify-email', { token: secondToken });
+    assert.equal(reused.response.status, 400);
+    assert.equal(reused.data.error.code, 'TOKEN_ALREADY_USED');
+
+    const alreadyVerified = await send('resend-verification', { email });
+    assert.equal(alreadyVerified.response.status, 202);
+    assert.equal(deliveryCounts.get(email), 2);
+    assert.match(alreadyVerified.data.message, /If you already verified it, you can sign in/);
+    const login = await send('login', { email, password: 'test-only-password-2026' });
+    assert.equal(login.response.status, 200);
+    assert.ok(cookie);
+    const refreshedSession = await fetch(`${base}/api/v1/auth/me`, { headers: { cookie } });
+    assert.equal(refreshedSession.status, 200);
+    assert.equal((await refreshedSession.json()).user.email, email);
+    const logout = await send('logout', {});
+    assert.equal(logout.response.status, 204);
+    const revokedSession = await fetch(`${base}/api/v1/auth/me`, { headers: { cookie } });
+    assert.equal(revokedSession.status, 401);
+
+    assert.equal((await send('register', { email: rateLimitEmail, fullName: 'Synthetic Rate Limit', password: 'test-only-password-2026' })).response.status, 202);
+    // The resend budget is per client IP, shared across accounts; the first account
+    // already used two requests, leaving three successful requests in this window.
+    for (let attempt = 0; attempt < 3; attempt += 1) assert.equal((await send('resend-verification', { email: rateLimitEmail })).response.status, 202);
+    const limited = await send('resend-verification', { email: rateLimitEmail });
+    assert.equal(limited.response.status, 429);
+    assert.equal(deliveryCounts.get(rateLimitEmail), 4);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    await prisma.$transaction(async (tx) => {
+      const users = await tx.user.findMany({ where: { email: { in: [...emails] } }, select: { id: true } });
+      const ids = users.map(({ id }) => id);
+      if (!ids.length) return;
+      await tx.emailVerificationToken.deleteMany({ where: { userId: { in: ids } } });
+      await tx.session.deleteMany({ where: { userId: { in: ids } } });
+      await tx.user.deleteMany({ where: { id: { in: ids } } });
+    });
+    await prisma.$disconnect();
+  }
+});
+
 test('MySQL-backed HTTP workflow covers account verification through organization request authorization', async () => {
   const prisma = new PrismaClient();
   const runKey = randomUUID();
@@ -165,7 +289,7 @@ test('MySQL-backed HTTP workflow covers account verification through organizatio
   };
   const signUpAndVerify = async (email, fullName) => {
     const registration = await send('/api/v1/auth/register', { method: 'POST', body: { email, fullName, password: 'test-only-password-2026' } });
-    assert.equal(registration.response.status, 201);
+    assert.equal(registration.response.status, 202);
     const staleToken = new URL(submittedEmails.get(email)).searchParams.get('token');
     assert.ok(staleToken);
     assert.equal((await send('/api/v1/auth/resend-verification', { method: 'POST', body: { email } })).response.status, 202);

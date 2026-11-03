@@ -23,12 +23,12 @@ Bootstrap an administrator only through the one-time `npm run admin:bootstrap` c
 ## Real verification-email smoke test
 
 1. Use a controlled test mailbox and a sender address on a domain authorized by your SMTP provider. Configure that domain's SPF, DKIM, and DMARC records as directed by the provider.
-2. Set all production SMTP values in the hosting secret manager: `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, and `EMAIL_FROM`. Use port 587 with `SMTP_SECURE=false` (the app requires STARTTLS), or port 465 with `SMTP_SECURE=true` (implicit TLS).
-3. Set the app's `CLIENT_ORIGIN` to the exact deployed HTTPS origin and deploy. Confirm `/api/v1/health/ready` returns `200` before testing.
-4. Register a new test account through the deployed HTTPS interface. Check the controlled mailbox's inbox and spam folder. Confirm the sender and subject are expected, then open the verification link; it should point to the correct HTTPS origin.
-5. Confirm the app reports verification success, then sign in. Confirm the authenticated state survives a page refresh and logout ends the session. Reusing the verification link should be rejected.
+2. Set all SMTP values in `server/.env` for local testing or in the hosting secret manager for production: `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, and `EMAIL_FROM`. Use port 587 with `SMTP_SECURE=false` (the app requires STARTTLS), or port 465 with `SMTP_SECURE=true` (implicit TLS). Local development uses real SMTP when all six values are set; without them registration and resend fail safely without creating a new account or logging a verification URL.
+3. Set `CLIENT_ORIGIN` to `http://localhost:5173` locally or the exact deployed HTTPS origin in production. Restart the API after changing settings. Confirm `/api/v1/health/ready` returns `200` before testing.
+4. Register a new test account through BloodLink. Check the controlled mailbox's inbox and spam folder. Confirm the sender and subject, then open the verification link and confirm it uses the correct frontend origin.
+5. Confirm the app reports verification success, then sign in. Confirm authenticated state survives a page refresh and logout ends the session. Reusing the verification link should be rejected.
 6. Test “resend verification” with a pending test account. The newer link should work and the superseded link should fail. Also try an unknown address; the response should not reveal whether an account exists.
-7. Review provider delivery logs and application logs for successful delivery or errors. Do not log or share SMTP passwords, verification tokens, or full verification URLs. Delete the test account after the smoke test if it is no longer needed.
+7. Review provider delivery logs for delivery results. Do not log or share SMTP passwords, verification tokens, or full verification URLs. Remove only test accounts created for this smoke test if they are no longer needed.
 
 ## Serverless rate limiting
 

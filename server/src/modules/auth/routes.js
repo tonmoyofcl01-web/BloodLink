@@ -10,6 +10,7 @@ export const registerSchema = z.object({
   fullName: z.string().trim().min(1).max(120),
 }).strict();
 export const loginSchema = z.object({ email: z.string().trim().email().max(254), password: z.string().min(1).max(128) }).strict();
+const registrationMessage = 'If this address can be registered, verification instructions will be sent. If you already have an account, sign in or request another link.';
 
 export function createAuthRouter({ prisma, env, emailAdapter = createEmailAdapter(env), rateLimiters = {} }) {
   const router = Router();
@@ -18,10 +19,15 @@ export function createAuthRouter({ prisma, env, emailAdapter = createEmailAdapte
     httpOnly: true, secure: env.SESSION_COOKIE_SECURE === 'true', sameSite: 'lax',
     path: '/', maxAge: env.SESSION_TTL_HOURS * 60 * 60 * 1000,
   };
+  const emailUnavailable = (res) => res.status(503).json({ error: {
+    code: 'EMAIL_DELIVERY_UNAVAILABLE',
+    message: 'Email delivery is not configured. Ask the administrator to configure SMTP, then try again.',
+  } });
 
   router.post('/register', rateLimiters.register || noRateLimit, async (req, res, next) => {
     try {
       const input = registerSchema.parse(req.body);
+      if (emailAdapter.isConfigured === false) return emailUnavailable(res);
       const email = input.email.toLowerCase();
       const passwordHash = await bcrypt.hash(input.password, 12);
       const rawToken = newSecret();
@@ -34,9 +40,9 @@ export function createAuthRouter({ prisma, env, emailAdapter = createEmailAdapte
       });
       const verifyUrl = `${env.CLIENT_ORIGIN}/verify-email?token=${encodeURIComponent(rawToken)}`;
       await emailAdapter({ email, url: verifyUrl });
-      return res.status(201).json({ message: 'Account created. Verify your email before signing in.' });
+      return res.status(202).json({ message: registrationMessage });
     } catch (error) {
-      if (error?.code === 'P2002') return res.status(202).json({ message: 'If this address can be registered, verification instructions have been sent.' });
+      if (error?.code === 'P2002') return res.status(202).json({ message: registrationMessage });
       next(error);
     }
   });
@@ -46,14 +52,16 @@ export function createAuthRouter({ prisma, env, emailAdapter = createEmailAdapte
       const { token } = z.object({ token: z.string().min(20).max(200) }).strict().parse(req.body);
       const tokenHash = hashSecret(token);
       const record = await prisma.emailVerificationToken.findUnique({ where: { tokenHash } });
-      if (!record || record.usedAt || record.expiresAt <= new Date()) return res.status(400).json({ error: { code: 'INVALID_TOKEN', message: 'Verification link is invalid or expired.' } });
+      if (!record) return res.status(400).json({ error: { code: 'INVALID_TOKEN', message: 'This verification link is invalid.' } });
+      if (record.usedAt) return res.status(400).json({ error: { code: 'TOKEN_ALREADY_USED', message: 'This verification link has already been used. Try signing in.' } });
+      if (record.expiresAt <= new Date()) return res.status(400).json({ error: { code: 'TOKEN_EXPIRED', message: 'This verification link has expired. Request a new one.' } });
       const verified = await prisma.$transaction(async (tx) => {
         const used = await tx.emailVerificationToken.updateMany({ where: { id: record.id, usedAt: null, expiresAt: { gt: new Date() } }, data: { usedAt: new Date() } });
         if (used.count !== 1) return false;
         const activated = await tx.user.updateMany({ where: { id: record.userId, status: 'PENDING_VERIFICATION', deletedAt: null }, data: { status: 'ACTIVE', emailVerifiedAt: new Date() } });
         return activated.count === 1;
       });
-      if (!verified) return res.status(400).json({ error: { code: 'INVALID_TOKEN', message: 'Verification link is invalid or expired.' } });
+      if (!verified) return res.status(400).json({ error: { code: 'TOKEN_ALREADY_USED', message: 'This verification link has already been used or is no longer valid. Try signing in or request a new link.' } });
       res.json({ message: 'Email verified. You can now sign in.' });
     } catch (error) { next(error); }
   });
@@ -61,6 +69,7 @@ export function createAuthRouter({ prisma, env, emailAdapter = createEmailAdapte
   router.post('/resend-verification', rateLimiters.resend || noRateLimit, async (req, res, next) => {
     try {
       const { email: rawEmail } = z.object({ email: z.string().trim().email().max(254) }).strict().parse(req.body);
+      if (emailAdapter.isConfigured === false) return emailUnavailable(res);
       const email = rawEmail.toLowerCase();
       const user = await prisma.user.findUnique({ where: { email }, select: { id: true, status: true, deletedAt: true } });
       if (user && user.status === 'PENDING_VERIFICATION' && !user.deletedAt) {
@@ -74,7 +83,7 @@ export function createAuthRouter({ prisma, env, emailAdapter = createEmailAdapte
         const verifyUrl = `${env.CLIENT_ORIGIN}/verify-email?token=${encodeURIComponent(rawToken)}`;
         await emailAdapter({ email, url: verifyUrl });
       }
-      res.status(202).json({ message: 'If the address needs verification, new instructions have been sent.' });
+      res.status(202).json({ message: 'If this address belongs to an unverified account, new instructions have been sent. If you already verified it, you can sign in.' });
     } catch (error) { next(error); }
   });
 
@@ -83,7 +92,9 @@ export function createAuthRouter({ prisma, env, emailAdapter = createEmailAdapte
       const input = loginSchema.parse(req.body);
       const user = await prisma.user.findUnique({ where: { email: input.email.toLowerCase() }, include: { adminAccount: true } });
       const passwordMatches = user && await bcrypt.compare(input.password, user.passwordHash);
-      if (!user || !passwordMatches || user.status !== 'ACTIVE' || user.deletedAt) return res.status(401).json({ error: { code: 'INVALID_CREDENTIALS', message: 'Email or password is incorrect, or email verification is incomplete.' } });
+      if (!user || !passwordMatches || user.deletedAt) return res.status(401).json({ error: { code: 'INVALID_CREDENTIALS', message: 'Email or password is incorrect.' } });
+      if (user.status === 'PENDING_VERIFICATION') return res.status(403).json({ error: { code: 'EMAIL_NOT_VERIFIED', message: 'Verify your email before signing in. You can request a new verification link.' } });
+      if (user.status !== 'ACTIVE') return res.status(403).json({ error: { code: 'ACCOUNT_INACTIVE', message: 'This account is not active. Contact BloodLink support.' } });
       const token = newSecret();
       const expiresAt = new Date(Date.now() + env.SESSION_TTL_HOURS * 60 * 60 * 1000);
       await prisma.session.create({ data: { userId: user.id, secretHash: hashSecret(token), expiresAt } });
