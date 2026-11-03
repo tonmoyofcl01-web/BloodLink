@@ -1,9 +1,9 @@
 import { Router } from 'express';
-import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { medicalNotice } from '../requests/routes.js';
 import { expireRequestIfNeeded, invalidatePendingDonorMatches } from '../matching/service.js';
 import { createNotifications } from '../notifications/service.js';
+import { createRateLimitMiddleware } from '../../lib/rate-limit-store.js';
 
 const bloodGroupCodes = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 const bloodGroupSchema = z.enum(bloodGroupCodes);
@@ -64,12 +64,12 @@ const profileSelect = {
   bloodGroup: { select: { code: true } },
 };
 
-export function createDonorRouter({ prisma, requireAuth }) {
+export function createDonorRouter({ prisma, requireAuth, rateLimitStore, env = { NODE_ENV: 'test' } }) {
   const router = Router();
   router.use(requireAuth);
-  const discoveryLimit = rateLimit({
-    windowMs: 10 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false,
-    handler: (_req, res) => res.status(429).json({ error: { code: 'RATE_LIMITED', message: 'Too many donor discovery searches. Try again later.' } }),
+  const discoveryLimit = createRateLimitMiddleware({
+    windowMs: 10 * 60 * 1000, limit: 30, store: rateLimitStore, env,
+    message: 'Too many donor discovery searches. Try again later.',
   });
 
   router.get('/discover', discoveryLimit, async (req, res, next) => {

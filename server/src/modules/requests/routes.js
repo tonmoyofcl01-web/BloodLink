@@ -1,8 +1,8 @@
 import { Router } from 'express';
-import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { closePendingMatches, expireRequestIfNeeded, generatePotentialMatches, matchSummary } from '../matching/service.js';
 import { notifyRequestStatus } from '../notifications/service.js';
+import { createRateLimitMiddleware } from '../../lib/rate-limit-store.js';
 
 const urgencyValues = ['URGENT', 'SCHEDULED'];
 const statusValues = ['OPEN', 'PAUSED', 'CANCELLED', 'CLOSED', 'EXPIRED', 'FULFILLED'];
@@ -53,12 +53,12 @@ function serializeRequest(request) {
 
 export const medicalNotice = 'Potential donor candidates are not medical approval. Qualified medical professionals must verify donor suitability and blood compatibility.';
 
-export function createRequestRouter({ prisma, requireAuth }) {
+export function createRequestRouter({ prisma, requireAuth, rateLimitStore, env = { NODE_ENV: 'test' } }) {
   const router = Router();
   router.use(requireAuth);
-  const createLimit = rateLimit({
-    windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false,
-    handler: (_req, res) => res.status(429).json({ error: { code: 'RATE_LIMITED', message: 'Too many requests created. Try again later.' } }),
+  const createLimit = createRateLimitMiddleware({
+    windowMs: 15 * 60 * 1000, limit: 10, store: rateLimitStore, env,
+    message: 'Too many requests created. Try again later.',
   });
 
   router.post('/', createLimit, async (req, res, next) => {

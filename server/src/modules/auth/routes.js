@@ -11,14 +11,15 @@ export const registerSchema = z.object({
 }).strict();
 export const loginSchema = z.object({ email: z.string().trim().email().max(254), password: z.string().min(1).max(128) }).strict();
 
-export function createAuthRouter({ prisma, env, emailAdapter = createEmailAdapter(env) }) {
+export function createAuthRouter({ prisma, env, emailAdapter = createEmailAdapter(env), rateLimiters = {} }) {
   const router = Router();
+  const noRateLimit = (_req, _res, next) => next();
   const cookieOptions = {
     httpOnly: true, secure: env.SESSION_COOKIE_SECURE === 'true', sameSite: 'lax',
     path: '/', maxAge: env.SESSION_TTL_HOURS * 60 * 60 * 1000,
   };
 
-  router.post('/register', async (req, res, next) => {
+  router.post('/register', rateLimiters.register || noRateLimit, async (req, res, next) => {
     try {
       const input = registerSchema.parse(req.body);
       const email = input.email.toLowerCase();
@@ -40,7 +41,7 @@ export function createAuthRouter({ prisma, env, emailAdapter = createEmailAdapte
     }
   });
 
-  router.post('/verify-email', async (req, res, next) => {
+  router.post('/verify-email', rateLimiters.verify || noRateLimit, async (req, res, next) => {
     try {
       const { token } = z.object({ token: z.string().min(20).max(200) }).strict().parse(req.body);
       const tokenHash = hashSecret(token);
@@ -57,7 +58,7 @@ export function createAuthRouter({ prisma, env, emailAdapter = createEmailAdapte
     } catch (error) { next(error); }
   });
 
-  router.post('/resend-verification', async (req, res, next) => {
+  router.post('/resend-verification', rateLimiters.resend || noRateLimit, async (req, res, next) => {
     try {
       const { email: rawEmail } = z.object({ email: z.string().trim().email().max(254) }).strict().parse(req.body);
       const email = rawEmail.toLowerCase();
@@ -77,7 +78,7 @@ export function createAuthRouter({ prisma, env, emailAdapter = createEmailAdapte
     } catch (error) { next(error); }
   });
 
-  router.post('/login', async (req, res, next) => {
+  router.post('/login', rateLimiters.login || noRateLimit, async (req, res, next) => {
     try {
       const input = loginSchema.parse(req.body);
       const user = await prisma.user.findUnique({ where: { email: input.email.toLowerCase() }, include: { adminAccount: true } });

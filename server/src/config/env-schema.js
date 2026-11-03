@@ -2,9 +2,11 @@ import { z } from 'zod';
 
 export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  VERCEL: z.string().optional(),
   PORT: z.coerce.number().int().positive().default(4000),
   CLIENT_ORIGIN: z.string().url().default('http://localhost:5173'),
   DATABASE_URL: z.string().min(1),
+  REDIS_URL: z.string().trim().min(1).optional(),
   SESSION_COOKIE_NAME: z.string().regex(/^[A-Za-z0-9_-]+$/).default('bloodlink_session'),
   SESSION_TTL_HOURS: z.coerce.number().int().positive().max(720).default(12),
   SESSION_COOKIE_SECURE: z.enum(['true', 'false']).default('false'),
@@ -15,7 +17,17 @@ export const envSchema = z.object({
   SMTP_PASSWORD: z.string().min(1).optional(),
   EMAIL_FROM: z.string().email().optional(),
 }).superRefine((value, ctx) => {
+  let redisProtocol;
+  if (value.REDIS_URL) {
+    try {
+      const redisUrl = new URL(value.REDIS_URL);
+      redisProtocol = redisUrl.protocol;
+      if (!['redis:', 'rediss:'].includes(redisUrl.protocol)) ctx.addIssue({ code: 'custom', path: ['REDIS_URL'], message: 'REDIS_URL must use redis:// or rediss://.' });
+    } catch { ctx.addIssue({ code: 'custom', path: ['REDIS_URL'], message: 'REDIS_URL must be a valid Redis connection URL.' }); }
+  }
   if (value.NODE_ENV !== 'production') return;
+  if (!value.REDIS_URL) ctx.addIssue({ code: 'custom', path: ['REDIS_URL'], message: 'Production shared rate limiting requires REDIS_URL.' });
+  else if (redisProtocol !== 'rediss:') ctx.addIssue({ code: 'custom', path: ['REDIS_URL'], message: 'Production REDIS_URL must use rediss:// TLS.' });
   if (value.SESSION_COOKIE_SECURE !== 'true') ctx.addIssue({ code: 'custom', path: ['SESSION_COOKIE_SECURE'], message: 'Secure cookies are required in production.' });
   const clientOrigin = new URL(value.CLIENT_ORIGIN);
   if (clientOrigin.protocol !== 'https:' || clientOrigin.pathname !== '/' || clientOrigin.search || clientOrigin.hash) ctx.addIssue({ code: 'custom', path: ['CLIENT_ORIGIN'], message: 'The production client origin must be an HTTPS origin without a path, query, or fragment.' });
