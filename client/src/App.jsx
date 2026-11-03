@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import RequestWorkspace from './features/requests/RequestWorkspace.jsx';
 import DonorDiscovery from './features/discovery/DonorDiscovery.jsx';
 import MyOpportunities from './features/donors/MyOpportunities.jsx';
+import NotificationsPage, { NotificationBell } from './features/notifications/NotificationsCenter.jsx';
+import OrganizationWorkspace, { OrganizationAdminWorkspace } from './features/organizations/OrganizationWorkspace.jsx';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:4000/api/v1';
 const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
@@ -93,21 +95,36 @@ export default function App() {
 
 function UserWorkspace({ user, onLogout }) {
   const [view, setView] = useState('profile');
+  const [focus, setFocus] = useState(null);
   const navItems = [
     ['profile', 'Donor Profile'],
     ['requests', 'Blood Requests'],
     ['discovery', 'Donor Discovery'],
     ['opportunities', 'My Opportunities'],
+    ['organizations', 'Organizations'],
+    ...(user.isAdmin ? [['admin-organizations', 'Verification Admin']] : []),
+    ['notifications', 'Notifications'],
   ];
+  function navigate(destination) {
+    setFocus(destination);
+    setView(destination.view);
+  }
   return <div className="mx-auto mt-6 max-w-6xl">
     <header className="mb-6 flex flex-wrap items-center justify-between gap-4">
       <div><p className="text-sm font-semibold uppercase tracking-[0.18em] text-teal-700 dark:text-teal-300">BloodLink account</p><h1 className="mt-1 text-2xl font-bold">Hello, {user.fullName}</h1></div>
-      <button onClick={onLogout} className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold hover:bg-white dark:border-slate-700 dark:hover:bg-slate-900">Sign out</button>
+      <div className="flex items-center gap-3"><NotificationBell onNavigate={navigate} /><button onClick={onLogout} className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold hover:bg-white dark:border-slate-700 dark:hover:bg-slate-900">Sign out</button></div>
     </header>
     <nav aria-label="BloodLink workspace" className="mb-6 flex gap-2 overflow-x-auto rounded-2xl bg-slate-200 p-1.5 dark:bg-slate-900">
       {navItems.map(([value, label]) => <button key={value} onClick={() => setView(value)} aria-current={view === value ? 'page' : undefined} className={`whitespace-nowrap rounded-xl px-4 py-2.5 text-sm font-semibold transition ${view === value ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white' : 'text-slate-600 hover:bg-white/60 dark:text-slate-300 dark:hover:bg-slate-800'}`}>{label}</button>)}
     </nav>
-    {view === 'profile' ? <DonorManager user={user} /> : view === 'requests' ? <RequestWorkspace /> : view === 'discovery' ? <DonorDiscovery /> : <MyOpportunities />}
+    {view === 'profile' ? <DonorManager user={user} />
+      : view === 'requests' ? <RequestWorkspace key={`requests-${focus?.id || ''}`} focusRequestId={focus?.id} />
+        : view === 'discovery' ? <DonorDiscovery />
+          : view === 'opportunities' ? <MyOpportunities focusOpportunityId={focus?.id} />
+            : view === 'notifications' ? <NotificationsPage onNavigate={navigate} />
+              : view === 'organizations' || view === 'organization' ? <OrganizationWorkspace key={focus?.id || 'organizations'} focusOrganizationId={focus?.id} />
+                : view === 'admin-organizations' ? <OrganizationAdminWorkspace key={focus?.id || 'admin'} focusOrganizationId={focus?.id} />
+                  : <DonorManager user={user} />}
   </div>;
 }
 

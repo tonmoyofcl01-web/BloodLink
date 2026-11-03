@@ -6,6 +6,8 @@ import rateLimit from 'express-rate-limit';
 import { createAuthRouter } from './modules/auth/routes.js';
 import { createDonorRouter } from './modules/donors/routes.js';
 import { createRequestRouter } from './modules/requests/routes.js';
+import { createNotificationRouter } from './modules/notifications/routes.js';
+import { createOrganizationAdminRouter, createOrganizationRouter } from './modules/organizations/routes.js';
 import { createAuthMiddleware } from './middleware/auth.js';
 import { errorHandler, notFound } from './middleware/errors.js';
 
@@ -34,6 +36,9 @@ export function createApp({ prisma, env }) {
   app.use('/api/v1/auth', createAuthRouter({ prisma, env }));
   app.use('/api/v1/donors', createDonorRouter({ prisma, requireAuth: auth.requireAuth }));
   app.use('/api/v1/requests', createRequestRouter({ prisma, requireAuth: auth.requireAuth }));
+  app.use('/api/v1/notifications', createNotificationRouter({ prisma, requireAuth: auth.requireAuth }));
+  app.use('/api/v1/organizations', createOrganizationRouter({ prisma, requireAuth: auth.requireAuth }));
+  app.use('/api/v1/admin/organizations', createOrganizationAdminRouter({ prisma, requireAuth: auth.requireAuth, requireAdmin: auth.requireAdmin }));
   app.use(notFound);
   app.use(errorHandler);
   return app;

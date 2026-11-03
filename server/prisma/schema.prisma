@@ -31,6 +31,50 @@ enum BloodRequestStatus {
   CANCELLED
   CLOSED
   EXPIRED
+  FULFILLED
+}
+
+enum NotificationType {
+  DONOR_OPPORTUNITY
+  DONOR_ACCEPTED
+  DONOR_DECLINED
+  DONOR_WITHDREW
+  REQUEST_STATUS
+  ORGANIZATION_SUBMITTED
+  ORGANIZATION_APPROVED
+  ORGANIZATION_REJECTED
+  ORGANIZATION_SUSPENDED
+}
+
+enum OrganizationType {
+  HOSPITAL
+  BLOOD_BANK
+}
+
+enum OrganizationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+  SUSPENDED
+}
+
+enum OrganizationMembershipRole {
+  OWNER
+  MANAGER
+  STAFF
+}
+
+enum OrganizationMembershipStatus {
+  ACTIVE
+  SUSPENDED
+  REMOVED
+}
+
+enum OrganizationVerificationAction {
+  SUBMITTED
+  APPROVED
+  REJECTED
+  SUSPENDED
 }
 
 enum RequestMatchStatus {
@@ -58,6 +102,10 @@ model User {
   grantedAdmins   AdminAccount[]          @relation("AdminGrantor")
   donorProfile     DonorProfile?
   bloodRequests    BloodRequest[]
+  notifications    Notification[]
+  organizationsCreated Organization[] @relation("OrganizationCreator")
+  organizationMemberships OrganizationMembership[]
+  verificationActions OrganizationVerificationEvent[] @relation("VerificationActor")
 
   @@index([status, createdAt])
   @@map("users")
@@ -99,6 +147,7 @@ model DonorProfile {
 model BloodRequest {
   id               String              @id @default(uuid()) @db.Char(36)
   requesterUserId  String              @map("requester_user_id") @db.Char(36)
+  organizationId   String?             @map("organization_id") @db.Char(36)
   bloodGroupId     Int                 @map("blood_group_id") @db.UnsignedSmallInt
   unitsRequested   Int                 @map("units_requested") @db.UnsignedSmallInt
   division         String              @db.VarChar(80)
@@ -113,13 +162,90 @@ model BloodRequest {
   createdAt        DateTime            @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt        DateTime            @updatedAt @map("updated_at") @db.DateTime(3)
   requester        User                @relation(fields: [requesterUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  organization     Organization?       @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   bloodGroup       BloodGroup          @relation(fields: [bloodGroupId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   matches          RequestMatch[]
 
   @@index([requesterUserId, createdAt])
+  @@index([organizationId, createdAt])
   @@index([status, neededAt, createdAt])
   @@index([bloodGroupId, division, district, area, status])
   @@map("blood_requests")
+}
+
+model Notification {
+  id            String           @id @default(uuid()) @db.Char(36)
+  userId        String           @map("user_id") @db.Char(36)
+  eventKey      String           @unique(map: "notifications_event_key_key") @map("event_key") @db.VarChar(191)
+  type          NotificationType
+  title         String           @db.VarChar(120)
+  message       String           @db.VarChar(280)
+  referenceType String?          @map("reference_type") @db.VarChar(32)
+  referenceId   String?          @map("reference_id") @db.Char(36)
+  readAt        DateTime?        @map("read_at") @db.DateTime(3)
+  createdAt     DateTime         @default(now()) @map("created_at") @db.DateTime(3)
+  user          User             @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
+}
+
+model Organization {
+  id                    String                    @id @default(uuid()) @db.Char(36)
+  name                  String                    @db.VarChar(180)
+  type                  OrganizationType
+  registrationNumber    String                    @unique(map: "organizations_registration_number_key") @map("registration_number") @db.VarChar(80)
+  division              String                    @db.VarChar(80)
+  district              String                    @db.VarChar(80)
+  area                  String                    @db.VarChar(100)
+  publicContactPhone    String                    @map("public_contact_phone") @db.VarChar(32)
+  verificationInfo      String?                   @map("verification_info") @db.VarChar(1000)
+  status                OrganizationStatus        @default(PENDING)
+  createdByUserId       String                    @map("created_by_user_id") @db.Char(36)
+  createdAt             DateTime                  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt             DateTime                  @updatedAt @map("updated_at") @db.DateTime(3)
+  creator               User                      @relation("OrganizationCreator", fields: [createdByUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  memberships           OrganizationMembership[]
+  verificationHistory   OrganizationVerificationEvent[]
+  bloodRequests         BloodRequest[]
+
+  @@index([status, createdAt])
+  @@index([createdByUserId, createdAt])
+  @@map("organizations")
+}
+
+model OrganizationMembership {
+  id             String                       @id @default(uuid()) @db.Char(36)
+  organizationId String                       @map("organization_id") @db.Char(36)
+  userId         String                       @map("user_id") @db.Char(36)
+  role           OrganizationMembershipRole  @default(OWNER)
+  status         OrganizationMembershipStatus @default(ACTIVE)
+  createdAt      DateTime                     @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt      DateTime                     @updatedAt @map("updated_at") @db.DateTime(3)
+  organization   Organization                 @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  user           User                         @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([organizationId, userId], map: "organization_memberships_organization_user_key")
+  @@index([userId, status])
+  @@index([organizationId, status])
+  @@map("organization_memberships")
+}
+
+model OrganizationVerificationEvent {
+  id             String                        @id @default(uuid()) @db.Char(36)
+  organizationId String                        @map("organization_id") @db.Char(36)
+  actorUserId    String?                       @map("actor_user_id") @db.Char(36)
+  action         OrganizationVerificationAction
+  fromStatus     OrganizationStatus?           @map("from_status")
+  toStatus       OrganizationStatus            @map("to_status")
+  reason         String?                       @db.VarChar(500)
+  createdAt      DateTime                      @default(now()) @map("created_at") @db.DateTime(3)
+  organization   Organization                  @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  actor          User?                         @relation("VerificationActor", fields: [actorUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([organizationId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@map("organization_verification_events")
 }
 
 model RequestMatch {

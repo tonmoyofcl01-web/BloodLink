@@ -3,6 +3,7 @@ import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { medicalNotice } from '../requests/routes.js';
 import { expireRequestIfNeeded, invalidatePendingDonorMatches } from '../matching/service.js';
+import { createNotifications } from '../notifications/service.js';
 
 const bloodGroupCodes = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 const bloodGroupSchema = z.enum(bloodGroupCodes);
@@ -162,7 +163,7 @@ export function createDonorRouter({ prisma, requireAuth }) {
         if (!donor) return { error: 'PROFILE_NOT_FOUND', status: 404 };
         const match = await tx.requestMatch.findFirst({
           where: { id: matchId, donorProfileId: donor.id },
-          include: { request: { select: { id: true, status: true, neededAt: true } } },
+          include: { request: { select: { id: true, status: true, neededAt: true, requesterUserId: true } } },
         });
         if (!match) return { error: 'OPPORTUNITY_NOT_FOUND', status: 404 };
         const now = new Date();
@@ -179,6 +180,11 @@ export function createDonorRouter({ prisma, requireAuth }) {
             data: { matchStatus: 'WITHDRAWN', respondedAt: now },
           });
           if (updated.count !== 1) return { error: 'RESPONSE_ALREADY_CHANGED', status: 409 };
+          await createNotifications(tx, [{
+            userId: match.request.requesterUserId, eventKey: `donor-response:${matchId}:WITHDRAWN`, type: 'DONOR_WITHDREW',
+            title: 'A donor changed their response', message: 'A donor withdrew an earlier response to your request.',
+            referenceType: 'REQUEST', referenceId: match.request.id,
+          }]);
         } else {
           if (match.matchStatus !== 'NOTIFIED') return { error: 'OPPORTUNITY_ALREADY_ANSWERED', status: 409 };
           if (!donor.discoveryConsentAt || donor.availabilityStatus !== 'AVAILABLE' || donor.user.status !== 'ACTIVE' || donor.user.deletedAt) {
@@ -191,6 +197,13 @@ export function createDonorRouter({ prisma, requireAuth }) {
             data: { matchStatus: nextStatus, respondedAt: now },
           });
           if (updated.count !== 1) return { error: 'OPPORTUNITY_ALREADY_ANSWERED', status: 409 };
+          await createNotifications(tx, [{
+            userId: match.request.requesterUserId, eventKey: `donor-response:${matchId}:${nextStatus}`,
+            type: nextStatus === 'ACCEPTED' ? 'DONOR_ACCEPTED' : 'DONOR_DECLINED',
+            title: nextStatus === 'ACCEPTED' ? 'A donor accepted your request' : 'A donor declined your request',
+            message: nextStatus === 'ACCEPTED' ? 'A donor accepted your blood request opportunity.' : 'A donor declined your blood request opportunity.',
+            referenceType: 'REQUEST', referenceId: match.request.id,
+          }]);
         }
         const updatedMatch = await tx.requestMatch.findFirst({ where: { id: matchId, donorProfileId: donor.id }, select: { matchStatus: true, respondedAt: true } });
         return { match: updatedMatch };

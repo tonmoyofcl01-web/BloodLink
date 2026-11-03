@@ -58,14 +58,14 @@ export function createAuthRouter({ prisma, env }) {
   router.post('/login', async (req, res, next) => {
     try {
       const input = loginSchema.parse(req.body);
-      const user = await prisma.user.findUnique({ where: { email: input.email.toLowerCase() } });
+      const user = await prisma.user.findUnique({ where: { email: input.email.toLowerCase() }, include: { adminAccount: true } });
       const passwordMatches = user && await bcrypt.compare(input.password, user.passwordHash);
       if (!user || !passwordMatches || user.status !== 'ACTIVE' || user.deletedAt) return res.status(401).json({ error: { code: 'INVALID_CREDENTIALS', message: 'Email or password is incorrect, or email verification is incomplete.' } });
       const token = newSecret();
       const expiresAt = new Date(Date.now() + env.SESSION_TTL_HOURS * 60 * 60 * 1000);
       await prisma.session.create({ data: { userId: user.id, secretHash: hashSecret(token), expiresAt } });
       res.cookie(env.SESSION_COOKIE_NAME, token, cookieOptions);
-      res.json({ user: { id: user.id, fullName: user.fullName, email: user.email } });
+      res.json({ user: { id: user.id, fullName: user.fullName, email: user.email, isAdmin: Boolean(user.adminAccount && !user.adminAccount.revokedAt) } });
     } catch (error) { next(error); }
   });
 

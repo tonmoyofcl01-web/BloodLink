@@ -2,9 +2,10 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { closePendingMatches, expireRequestIfNeeded, generatePotentialMatches, matchSummary } from '../matching/service.js';
+import { notifyRequestStatus } from '../notifications/service.js';
 
 const urgencyValues = ['URGENT', 'SCHEDULED'];
-const statusValues = ['OPEN', 'PAUSED', 'CANCELLED', 'CLOSED', 'EXPIRED'];
+const statusValues = ['OPEN', 'PAUSED', 'CANCELLED', 'CLOSED', 'EXPIRED', 'FULFILLED'];
 const bloodGroupValues = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 const requestSchema = z.object({
   bloodGroup: z.enum(bloodGroupValues),
@@ -22,7 +23,7 @@ const listSchema = z.object({
   page: z.coerce.number().int().min(1).max(1000).default(1),
   limit: z.coerce.number().int().min(1).max(50).default(10),
 }).strict();
-const requesterTransitionSchema = z.object({ status: z.enum(['OPEN', 'PAUSED', 'CANCELLED', 'CLOSED']) }).strict();
+const requesterTransitionSchema = z.object({ status: z.enum(['OPEN', 'PAUSED', 'CANCELLED', 'CLOSED', 'FULFILLED']) }).strict();
 const requestSelect = {
   id: true,
   bloodGroup: { select: { code: true } },
@@ -40,10 +41,10 @@ const requestSelect = {
   updatedAt: true,
 };
 const transitions = {
-  OPEN: ['PAUSED', 'CANCELLED', 'CLOSED'],
-  PAUSED: ['OPEN', 'CANCELLED', 'CLOSED'],
+  OPEN: ['PAUSED', 'CANCELLED', 'CLOSED', 'FULFILLED'],
+  PAUSED: ['OPEN', 'CANCELLED', 'CLOSED', 'FULFILLED'],
   CANCELLED: [],
-  CLOSED: [],
+  CLOSED: [], FULFILLED: [],
 };
 
 function serializeRequest(request) {
@@ -166,13 +167,14 @@ export function createRequestRouter({ prisma, requireAuth }) {
       if (!transitions[existing.status].includes(status)) return res.status(409).json({ error: { code: 'INVALID_STATUS_TRANSITION', message: `Cannot change a ${existing.status.toLowerCase()} request to ${status.toLowerCase()}.` } });
       const changed = await prisma.bloodRequest.updateMany({
         where: { id, requesterUserId: req.auth.userId, status: existing.status },
-        data: { status, closedAt: ['CANCELLED', 'CLOSED'].includes(status) ? new Date() : null },
+        data: { status, closedAt: ['CANCELLED', 'CLOSED', 'FULFILLED'].includes(status) ? new Date() : null },
       });
       if (changed.count !== 1) return res.status(409).json({ error: { code: 'INVALID_STATUS_TRANSITION', message: 'Request status changed; reload and try again.' } });
       let matching = null;
       if (status === 'OPEN') matching = await generatePotentialMatches(prisma, id);
-      if (['CANCELLED', 'CLOSED'].includes(status)) await closePendingMatches(prisma, id, 'CLOSED');
+      if (['CANCELLED', 'CLOSED', 'FULFILLED'].includes(status)) await closePendingMatches(prisma, id, 'CLOSED');
       const request = await prisma.bloodRequest.findFirst({ where: { id, requesterUserId: req.auth.userId }, select: requestSelect });
+      await notifyRequestStatus(prisma, id, status, request.updatedAt);
       res.json({ request: serializeRequest(request), matching });
     } catch (error) { next(error); }
   });

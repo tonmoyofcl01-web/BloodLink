@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
-    "test": "node --test src/lib/validation.test.js src/middleware/auth.test.js src/modules/auth/routes.test.js src/modules/donors/routes.test.js src/modules/donors/discovery.test.js src/modules/donors/opportunities.test.js src/modules/requests/routes.test.js src/modules/matching/service.test.js",
+    "test": "node --test src/lib/validation.test.js src/middleware/auth.test.js src/modules/auth/routes.test.js src/modules/donors/routes.test.js src/modules/donors/discovery.test.js src/modules/donors/opportunities.test.js src/modules/requests/routes.test.js src/modules/matching/service.test.js src/modules/notifications/routes.test.js src/modules/organizations/routes.test.js",
     "test:db": "node --test src/db/database.test.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",

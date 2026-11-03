@@ -154,7 +154,7 @@ test('owners can edit, pause, reopen, cancel, and close requests with valid tran
     assert.equal((await response.json()).request.status, 'CANCELLED');
     assert.ok(prisma.records.get(second.id).closedAt instanceof Date);
     response = await fetch(`${base}/api/v1/requests/${second.id}/status`, { method: 'PATCH', headers, body: JSON.stringify({ status: 'FULFILLED' }) });
-    assert.equal(response.status, 400);
+    assert.equal(response.status, 409);
   });
 });
 

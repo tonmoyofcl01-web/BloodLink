@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { env } from '../config/env.js';
 import { generatePotentialMatches } from '../modules/matching/service.js';
+import { createNotifications, notifyRequestStatus } from '../modules/notifications/service.js';
 
 test('configured MySQL database is reachable and all migrations are applied', async () => {
   const prisma = new PrismaClient();
@@ -16,13 +17,13 @@ test('configured MySQL database is reachable and all migrations are applied', as
 
     const rows = await prisma.$queryRaw`SELECT TABLE_NAME AS tableName FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'`;
     const tables = new Set(rows.map((row) => row.tableName));
-    for (const table of ['users', 'sessions', 'email_verification_tokens', 'admin_accounts', 'blood_groups', 'donor_profiles', 'blood_requests', 'request_matches', '_prisma_migrations']) {
+    for (const table of ['users', 'sessions', 'email_verification_tokens', 'admin_accounts', 'blood_groups', 'donor_profiles', 'blood_requests', 'request_matches', 'notifications', 'organizations', 'organization_memberships', 'organization_verification_events', '_prisma_migrations']) {
       assert.ok(tables.has(table), `Expected table ${table} to exist`);
     }
     console.info(`[database check] tables: ${[...tables].sort().join(', ')}`);
 
-    const migrations = await prisma.$queryRaw`SELECT migration_name AS migrationName, finished_at AS finishedAt, rolled_back_at AS rolledBackAt FROM _prisma_migrations WHERE migration_name IN ('20261103000000_initial', '20261103020000_donor_profiles', '20261103030000_blood_requests', '20261103040000_smart_matching') AND finished_at IS NOT NULL AND rolled_back_at IS NULL`;
-    assert.equal(migrations.length, 4);
+    const migrations = await prisma.$queryRaw`SELECT migration_name AS migrationName, finished_at AS finishedAt, rolled_back_at AS rolledBackAt FROM _prisma_migrations WHERE migration_name IN ('20261103000000_initial', '20261103020000_donor_profiles', '20261103030000_blood_requests', '20261103040000_smart_matching', '20261103050000_notifications_organizations') AND finished_at IS NOT NULL AND rolled_back_at IS NULL`;
+    assert.equal(migrations.length, 5);
     const unresolvedFailures = await prisma.$queryRaw`SELECT COUNT(*) AS count FROM _prisma_migrations WHERE finished_at IS NULL AND rolled_back_at IS NULL`;
     assert.equal(Number(unresolvedFailures[0].count), 0);
   } finally {
@@ -98,13 +99,41 @@ test('blood groups, donor discovery filters, and request lifecycle work transact
       const generated = await generatePotentialMatches(tx, bloodRequest.id);
       assert.equal(generated.candidates, 3);
       assert.equal(generated.created, 3);
+      assert.equal(await tx.notification.count({ where: { type: 'DONOR_OPPORTUNITY' } }), 3);
       const repeated = await generatePotentialMatches(tx, bloodRequest.id);
       assert.equal(repeated.created, 0);
+      assert.equal(await tx.notification.count({ where: { type: 'DONOR_OPPORTUNITY' } }), 3);
       const persistedMatches = await tx.requestMatch.findMany({ where: { requestId: bloodRequest.id }, select: { locationRank: true, matchStatus: true } });
       assert.deepEqual(persistedMatches.map((match) => match.locationRank).sort((a, b) => b - a), [3, 2, 1]);
       assert.ok(persistedMatches.every((match) => match.matchStatus === 'NOTIFIED'));
       const paused = await tx.bloodRequest.updateMany({ where: { id: bloodRequest.id, requesterUserId: user.id, status: 'OPEN' }, data: { status: 'PAUSED' } });
       assert.equal(paused.count, 1);
+      const requestAfterPause = await tx.bloodRequest.findUnique({ where: { id: bloodRequest.id }, select: { updatedAt: true } });
+      await notifyRequestStatus(tx, bloodRequest.id, 'PAUSED', requestAfterPause.updatedAt);
+      assert.equal(await tx.notification.count({ where: { type: 'REQUEST_STATUS' } }), 4);
+      const statusNotifications = await tx.notification.findMany({ where: { type: 'REQUEST_STATUS' }, select: { userId: true, referenceType: true, referenceId: true } });
+      assert.equal(statusNotifications.filter((item) => item.referenceType === 'OPPORTUNITY').length, 3);
+      assert.equal(statusNotifications.filter((item) => item.referenceType === 'REQUEST').length, 1);
+
+      const organization = await tx.organization.create({ data: {
+        name: 'Synthetic Test Hospital', type: 'HOSPITAL', registrationNumber: `TEST-${randomUUID()}`,
+        division: 'North', district: 'Metro', area: 'Central', publicContactPhone: '+8801000000000',
+        verificationInfo: 'Synthetic test record', createdByUserId: user.id,
+      } });
+      assert.equal(organization.status, 'PENDING');
+      const membership = await tx.organizationMembership.create({ data: { organizationId: organization.id, userId: user.id, role: 'OWNER' } });
+      assert.equal(membership.status, 'ACTIVE');
+      await tx.organizationVerificationEvent.create({ data: { organizationId: organization.id, actorUserId: user.id, action: 'SUBMITTED', toStatus: 'PENDING' } });
+      await tx.organization.update({ where: { id: organization.id }, data: { status: 'VERIFIED' } });
+      await tx.organizationVerificationEvent.create({ data: { organizationId: organization.id, actorUserId: user.id, action: 'APPROVED', fromStatus: 'PENDING', toStatus: 'VERIFIED' } });
+      assert.equal(await tx.organizationVerificationEvent.count({ where: { organizationId: organization.id } }), 2);
+
+      const supportedTypes = ['DONOR_ACCEPTED', 'DONOR_DECLINED', 'DONOR_WITHDREW', 'ORGANIZATION_SUBMITTED', 'ORGANIZATION_APPROVED', 'ORGANIZATION_REJECTED', 'ORGANIZATION_SUSPENDED'];
+      const eventRows = supportedTypes.map((type) => ({ userId: user.id, eventKey: `integration:${type}`, type, title: 'Synthetic event', message: 'Synthetic test notification.' }));
+      await createNotifications(tx, eventRows);
+      const duplicateInsert = await createNotifications(tx, eventRows);
+      assert.equal(duplicateInsert.count, 0);
+      assert.equal(await tx.notification.count({ where: { userId: user.id } }), 8);
       throw rollback;
     }), (error) => error === rollback);
   } finally {

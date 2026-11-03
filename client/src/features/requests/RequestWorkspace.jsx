@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:4000/api/v1';
 const GROUPS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
-const STATUSES = ['OPEN', 'PAUSED', 'CANCELLED', 'CLOSED', 'EXPIRED'];
+const STATUSES = ['OPEN', 'PAUSED', 'CANCELLED', 'CLOSED', 'EXPIRED', 'FULFILLED'];
 
 const emptyRequest = () => ({ bloodGroup: 'O+', unitsRequested: '1', division: '', district: '', area: '', urgency: 'URGENT', neededAt: toLocalDateTime(new Date(Date.now() + 60 * 60 * 1000)), facilityName: '', publicNote: '' });
 
@@ -13,7 +13,7 @@ function toLocalDateTime(date) {
 
 const inputClass = 'mt-1.5 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100';
 
-export default function RequestWorkspace() {
+export default function RequestWorkspace({ focusRequestId }) {
   const [section, setSection] = useState('mine');
   const [requests, setRequests] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -54,6 +54,8 @@ export default function RequestWorkspace() {
     } catch (error) { setMessage(error.message); }
     finally { setLoading(false); }
   }
+
+  useEffect(() => { if (focusRequestId) openDetails(focusRequestId); }, [focusRequestId]);
 
   async function saveRequest(event, initial) {
     event.preventDefault();
@@ -192,7 +194,7 @@ function RequestForm({ initial, saving, onSubmit, onCancel }) {
 }
 
 function StatusBadge({ status }) {
-  const color = { OPEN: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200', PAUSED: 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200', CANCELLED: 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300', CLOSED: 'bg-slate-900 text-white dark:bg-slate-700', EXPIRED: 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200' }[status];
+  const color = { OPEN: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200', PAUSED: 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200', CANCELLED: 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300', CLOSED: 'bg-slate-900 text-white dark:bg-slate-700', EXPIRED: 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200', FULFILLED: 'bg-teal-100 text-teal-900 dark:bg-teal-950 dark:text-teal-200' }[status];
   return <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${color}`}>{status}</span>;
 }
 

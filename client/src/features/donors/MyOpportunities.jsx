@@ -10,7 +10,7 @@ const statusColors = {
   CLOSED: 'bg-slate-900 text-white dark:bg-slate-700',
 };
 
-export default function MyOpportunities() {
+export default function MyOpportunities({ focusOpportunityId }) {
   const [opportunities, setOpportunities] = useState([]);
   const [pagination, setPagination] = useState({ page: 1, limit: 20, total: 0, totalPages: 0 });
   const [page, setPage] = useState(1);
@@ -34,6 +34,11 @@ export default function MyOpportunities() {
   }, [page]);
 
   useEffect(() => { load(page); }, [page, load]);
+  useEffect(() => {
+    if (focusOpportunityId && opportunities.some((item) => item.id === focusOpportunityId)) {
+      document.getElementById(`opportunity-${focusOpportunityId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [focusOpportunityId, opportunities]);
 
   async function respond(opportunity, action) {
     setSavingId(opportunity.id);
@@ -63,7 +68,7 @@ export default function MyOpportunities() {
           const requestOpen = opportunity.requestStatus === 'OPEN' && new Date(opportunity.neededAt) > new Date();
           const canRespond = opportunity.status === 'NOTIFIED' && requestOpen;
           const canWithdraw = opportunity.status === 'ACCEPTED' && requestOpen;
-          return <li key={opportunity.id} className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200 transition hover:-translate-y-0.5 hover:shadow-md dark:bg-slate-900 dark:ring-slate-800 sm:p-6">
+          return <li id={`opportunity-${opportunity.id}`} key={opportunity.id} className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200 transition hover:-translate-y-0.5 hover:shadow-md dark:bg-slate-900 dark:ring-slate-800 sm:p-6">
             <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{opportunity.urgency} request</p><h3 className="mt-1 text-xl font-bold text-rose-700 dark:text-rose-300">{opportunity.bloodGroup} · {opportunity.unitsRequested} units</h3></div><StatusBadge status={opportunity.status} /></div>
             <dl className="mt-5 grid grid-cols-2 gap-4 text-sm"><Detail label="Coarse location" value={`${opportunity.location.district}, ${opportunity.location.division}`} /><Detail label="Needed by" value={new Date(opportunity.neededAt).toLocaleString()} /></dl>
             {!requestOpen && opportunity.status === 'NOTIFIED' && <p className="mt-4 text-sm text-slate-500">This opportunity is no longer open for responses.</p>}

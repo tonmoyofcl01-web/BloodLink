@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { createNotifications, notifyRequestStatus } from '../notifications/service.js';
 
 export function normalizeLocation(value) {
   return String(value).normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
@@ -36,7 +37,11 @@ export async function expireRequestIfNeeded(db, requestId, now = new Date()) {
     where: { id: requestId, status: request.status, neededAt: { lte: now } },
     data: { status: 'EXPIRED', closedAt: now },
   });
-  if (expired.count) await closePendingMatches(db, requestId, 'CLOSED');
+  if (expired.count) {
+    await closePendingMatches(db, requestId, 'CLOSED');
+    const updated = await db.bloodRequest.findUnique({ where: { id: requestId }, select: { updatedAt: true } });
+    await notifyRequestStatus(db, requestId, 'EXPIRED', updated?.updatedAt || now);
+  }
   return expired.count === 1;
 }
 
@@ -62,6 +67,7 @@ export async function generatePotentialMatches(db, requestId, now = new Date()) 
     },
     select: {
       id: true,
+      userId: true,
       bloodGroupId: true,
       division: true,
       district: true,
@@ -125,6 +131,18 @@ export async function generatePotentialMatches(db, requestId, now = new Date()) 
       notifiedAt,
     })),
   });
+  const savedMatches = await db.requestMatch.findMany({
+    where: { requestId, donorProfileId: { in: donorIds } },
+    select: { id: true, donorProfileId: true },
+  });
+  const donorUserByProfile = new Map(ranked.map(({ donor }) => [donor.id, donor.userId]));
+  await createNotifications(db, savedMatches.map((match) => ({
+    userId: donorUserByProfile.get(match.donorProfileId),
+    eventKey: `donor-opportunity:${requestId}:${match.donorProfileId}`,
+    type: 'DONOR_OPPORTUNITY', title: 'A blood request may need your help',
+    message: 'A new request matches your donor profile. Review the opportunity to respond.',
+    referenceType: 'OPPORTUNITY', referenceId: match.id,
+  })).filter((item) => item.userId));
   return { candidates: ranked.length, created: created.count };
 }
 

@@ -24,11 +24,21 @@ function opportunitiesPrisma({ sessionUser = 'donor-user', profileOwner = 'donor
     { id: matchId1, donorProfileId: 'donor-profile-private', requestId: request.id, matchStatus: 'NOTIFIED', locationRank: 3, notifiedAt: new Date(), respondedAt: null, updatedAt: new Date(), request },
     { id: matchId2, donorProfileId: 'donor-profile-private', requestId: request.id, matchStatus: 'NOTIFIED', locationRank: 2, notifiedAt: new Date(), respondedAt: null, updatedAt: new Date(), request },
   ];
+  const notifications = [];
   const prisma = {
     matches,
+    notifications,
     session: { findUnique: async () => ({ userId: sessionUser, revokedAt: null, expiresAt: new Date(Date.now() + 60_000), user: { status: 'ACTIVE', deletedAt: null, adminAccount: null } }) },
     $transaction: async (operation) => operation(prisma),
     donorProfile: { findUnique: async ({ where }) => where.userId === profileOwner ? profile : null },
+    notification: { createMany: async ({ data, skipDuplicates }) => {
+      let count = 0;
+      for (const item of data) {
+        if (skipDuplicates && notifications.some((existing) => existing.eventKey === item.eventKey)) continue;
+        notifications.push(item); count += 1;
+      }
+      return { count };
+    } },
     bloodRequest: {
       findUnique: async () => request,
       updateMany: async ({ where, data }) => { if (request.status !== where.status) return { count: 0 }; Object.assign(request, data); return { count: 1 }; },
@@ -72,6 +82,8 @@ test('donors see only their own coarse opportunities and can accept, decline, an
     assert.equal((await response.json()).match.matchStatus, 'DECLINED');
     response = await fetch(`${base}/api/v1/donors/me/opportunities/${matchId2}/respond`, { method: 'POST', headers, body: JSON.stringify({ action: 'ACCEPT' }) });
     assert.equal(response.status, 409);
+    assert.deepEqual(prisma.notifications.map((item) => item.type), ['DONOR_ACCEPTED', 'DONOR_WITHDREW', 'DONOR_DECLINED']);
+    assert.ok(prisma.notifications.every((item) => item.userId === 'requester-private-id' && !/email|phone|area/i.test(item.message)));
   });
 });
 
