@@ -5,6 +5,8 @@ import { PrismaClient } from '@prisma/client';
 import { env } from '../config/env.js';
 import { generatePotentialMatches } from '../modules/matching/service.js';
 import { createNotifications, notifyRequestStatus } from '../modules/notifications/service.js';
+import { createApp } from '../app.js';
+import bcrypt from 'bcryptjs';
 
 test('configured MySQL database is reachable and all migrations are applied', async () => {
   const prisma = new PrismaClient();
@@ -137,6 +139,151 @@ test('blood groups, donor discovery filters, and request lifecycle work transact
       throw rollback;
     }), (error) => error === rollback);
   } finally {
+    await prisma.$disconnect();
+  }
+});
+
+test('MySQL-backed HTTP workflow covers account verification through organization request authorization', async () => {
+  const prisma = new PrismaClient();
+  const runKey = randomUUID();
+  const emailPrefix = `m6-${runKey}-`;
+  const submittedEmails = new Map();
+  const envForTest = { ...env, NODE_ENV: 'test', PORT: 0, CLIENT_ORIGIN: 'http://localhost:5173', SESSION_COOKIE_NAME: 'bloodlink_session', SESSION_COOKIE_SECURE: 'false' };
+  const app = createApp({ prisma, env: envForTest, emailAdapter: async ({ email, url }) => submittedEmails.set(email, url) });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const cookies = new Map();
+  const send = async (path, { method = 'GET', email, body } = {}) => {
+    const headers = {};
+    if (cookies.has(email)) headers.cookie = cookies.get(email);
+    if (body !== undefined) headers['content-type'] = 'application/json';
+    const response = await fetch(`${base}${path}`, { method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+    const cookie = response.headers.get('set-cookie');
+    if (cookie && email) cookies.set(email, cookie.split(';')[0]);
+    return { response, data: response.status === 204 ? null : await response.json() };
+  };
+  const signUpAndVerify = async (email, fullName) => {
+    const registration = await send('/api/v1/auth/register', { method: 'POST', body: { email, fullName, password: 'test-only-password-2026' } });
+    assert.equal(registration.response.status, 201);
+    const staleToken = new URL(submittedEmails.get(email)).searchParams.get('token');
+    assert.ok(staleToken);
+    assert.equal((await send('/api/v1/auth/resend-verification', { method: 'POST', body: { email } })).response.status, 202);
+    const verificationToken = new URL(submittedEmails.get(email)).searchParams.get('token');
+    assert.notEqual(verificationToken, staleToken);
+    assert.equal((await send('/api/v1/auth/verify-email', { method: 'POST', body: { token: staleToken } })).response.status, 400);
+    const verifiedResponses = await Promise.all([
+      send('/api/v1/auth/verify-email', { method: 'POST', body: { token: verificationToken } }),
+      send('/api/v1/auth/verify-email', { method: 'POST', body: { token: verificationToken } }),
+    ]);
+    assert.deepEqual(verifiedResponses.map(({ response }) => response.status).sort(), [200, 400]);
+    return verificationToken;
+  };
+  let adminEmail;
+  try {
+    const donorEmail = `${emailPrefix}donor@example.invalid`;
+    const requesterEmail = `${emailPrefix}requester@example.invalid`;
+    await signUpAndVerify(donorEmail, 'Synthetic Donor');
+    const donorLogin = await send('/api/v1/auth/login', { method: 'POST', email: donorEmail, body: { email: donorEmail, password: 'test-only-password-2026' } });
+    assert.equal(donorLogin.response.status, 200);
+
+    await signUpAndVerify(requesterEmail, 'Synthetic Requester');
+    const requesterLogin = await send('/api/v1/auth/login', { method: 'POST', email: requesterEmail, body: { email: requesterEmail, password: 'test-only-password-2026' } });
+    assert.equal(requesterLogin.response.status, 200);
+
+    const profile = await send('/api/v1/donors/me', { method: 'POST', email: donorEmail, body: { displayName: 'Synthetic donor', bloodGroup: 'O+', division: 'QA Division', district: 'QA District', area: 'QA Area' } });
+    assert.equal(profile.response.status, 201);
+    assert.equal((await send('/api/v1/donors/me/consent', { method: 'PATCH', email: donorEmail, body: { consented: true } })).response.status, 200);
+    assert.equal((await send('/api/v1/donors/me/availability', { method: 'PATCH', email: donorEmail, body: { status: 'AVAILABLE' } })).response.status, 200);
+
+    const requestBody = { bloodGroup: 'O+', unitsRequested: 2, division: ' qa division ', district: 'QA DISTRICT', area: 'qa area', urgency: 'URGENT', neededAt: new Date(Date.now() + 86_400_000).toISOString() };
+    const createdRequest = await send('/api/v1/requests', { method: 'POST', email: requesterEmail, body: requestBody });
+    assert.equal(createdRequest.response.status, 201);
+    assert.equal(createdRequest.data.matching.created, 1);
+    const requestId = createdRequest.data.request.id;
+    const donorNotifications = await send('/api/v1/notifications', { email: donorEmail });
+    assert.equal(donorNotifications.data.unreadCount, 1);
+    assert.equal(donorNotifications.data.notifications[0].type, 'DONOR_OPPORTUNITY');
+    const opportunities = await send('/api/v1/donors/me/opportunities', { email: donorEmail });
+    const opportunityId = opportunities.data.opportunities[0].id;
+    assert.ok(opportunityId);
+
+    let response = await send(`/api/v1/donors/me/opportunities/${opportunityId}/respond`, { method: 'POST', email: donorEmail, body: { action: 'ACCEPT' } });
+    assert.equal(response.response.status, 200);
+    const matchSummary = await send(`/api/v1/requests/${requestId}/matches`, { email: requesterEmail });
+    assert.equal(matchSummary.data.counts.accepted, 1);
+    response = await send(`/api/v1/donors/me/opportunities/${opportunityId}/respond`, { method: 'POST', email: donorEmail, body: { action: 'WITHDRAW' } });
+    assert.equal(response.response.status, 200);
+    assert.ok((await send('/api/v1/notifications', { email: requesterEmail })).data.notifications.some((item) => item.type === 'DONOR_WITHDREW'));
+    assert.equal((await send('/api/v1/notifications/read-all', { method: 'PATCH', email: requesterEmail })).response.status, 200);
+
+    for (const status of ['PAUSED', 'OPEN', 'FULFILLED']) {
+      response = await send(`/api/v1/requests/${requestId}/status`, { method: 'PATCH', email: requesterEmail, body: { status } });
+      assert.equal(response.response.status, 200, `request status ${status}`);
+    }
+
+    const organizationEmail = requesterEmail;
+    const application = await send('/api/v1/organizations', { method: 'POST', email: organizationEmail, body: {
+      name: 'Synthetic Integration Hospital', type: 'HOSPITAL', registrationNumber: `M6-${runKey}`,
+      division: 'QA Division', district: 'QA District', area: 'QA Area', publicContactPhone: '+8801000000000',
+    } });
+    assert.equal(application.response.status, 201);
+    const organizationId = application.data.organization.id;
+    const orgRequestBody = { ...requestBody, division: 'QA Division', district: 'QA District', area: 'QA Area' };
+    assert.equal((await send(`/api/v1/organizations/mine/${organizationId}/requests`, { method: 'POST', email: organizationEmail, body: orgRequestBody })).response.status, 403);
+
+    adminEmail = `${emailPrefix}admin@example.invalid`;
+    const adminPassword = 'test-only-admin-password-2026';
+    const admin = await prisma.user.create({ data: { email: adminEmail, fullName: 'Synthetic Integration Admin', passwordHash: await bcrypt.hash(adminPassword, 4), status: 'ACTIVE', emailVerifiedAt: new Date() } });
+    await prisma.adminAccount.create({ data: { userId: admin.id } });
+    const adminLogin = await send('/api/v1/auth/login', { method: 'POST', email: adminEmail, body: { email: adminEmail, password: adminPassword } });
+    assert.equal(adminLogin.response.status, 200);
+    assert.equal(adminLogin.data.user.isAdmin, true);
+    response = await send(`/api/v1/admin/organizations/${organizationId}/decision`, { method: 'PATCH', email: adminEmail, body: { action: 'APPROVE' } });
+    assert.equal(response.response.status, 200);
+    assert.equal(response.data.organization.status, 'VERIFIED');
+    const orgRequest = await send(`/api/v1/organizations/mine/${organizationId}/requests`, { method: 'POST', email: organizationEmail, body: orgRequestBody });
+    assert.equal(orgRequest.response.status, 201);
+    const dashboard = await send(`/api/v1/organizations/mine/${organizationId}/dashboard`, { email: organizationEmail });
+    assert.equal(dashboard.data.requests.length, 1);
+    assert.equal(dashboard.data.requestStatusCounts.OPEN, 1);
+    response = await send(`/api/v1/admin/organizations/${organizationId}/decision`, { method: 'PATCH', email: adminEmail, body: { action: 'SUSPEND', reason: 'Synthetic test suspension.' } });
+    assert.equal(response.data.organization.status, 'SUSPENDED');
+    assert.equal((await send(`/api/v1/organizations/mine/${organizationId}/requests`, { method: 'POST', email: organizationEmail, body: orgRequestBody })).response.status, 403);
+
+    const logout = await send('/api/v1/auth/logout', { method: 'POST', email: requesterEmail });
+    assert.equal(logout.response.status, 204);
+    assert.equal((await send('/api/v1/requests/mine', { email: requesterEmail })).response.status, 401);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    const emails = [...cookies.keys()];
+    if (adminEmail) emails.push(adminEmail);
+    if (emails.length) {
+      await prisma.$transaction(async (tx) => {
+        const users = await tx.user.findMany({ where: { email: { in: [...new Set(emails)] } }, select: { id: true } });
+        const userIds = users.map((item) => item.id);
+        if (!userIds.length) return;
+        const organizations = await tx.organization.findMany({ where: { createdByUserId: { in: userIds } }, select: { id: true } });
+        const organizationIds = organizations.map((item) => item.id);
+        const requests = await tx.bloodRequest.findMany({ where: { OR: [{ requesterUserId: { in: userIds } }, ...(organizationIds.length ? [{ organizationId: { in: organizationIds } }] : [])] }, select: { id: true } });
+        const requestIds = requests.map((item) => item.id);
+        const donors = await tx.donorProfile.findMany({ where: { userId: { in: userIds } }, select: { id: true } });
+        const donorIds = donors.map((item) => item.id);
+        await tx.notification.deleteMany({ where: { userId: { in: userIds } } });
+        if (organizationIds.length) {
+          await tx.organizationVerificationEvent.deleteMany({ where: { organizationId: { in: organizationIds } } });
+          await tx.organizationMembership.deleteMany({ where: { organizationId: { in: organizationIds } } });
+        }
+        if (requestIds.length || donorIds.length) await tx.requestMatch.deleteMany({ where: { OR: [...(requestIds.length ? [{ requestId: { in: requestIds } }] : []), ...(donorIds.length ? [{ donorProfileId: { in: donorIds } }] : [])] } });
+        if (requestIds.length) await tx.bloodRequest.deleteMany({ where: { id: { in: requestIds } } });
+        if (organizationIds.length) await tx.organization.deleteMany({ where: { id: { in: organizationIds } } });
+        if (donorIds.length) await tx.donorProfile.deleteMany({ where: { id: { in: donorIds } } });
+        await tx.emailVerificationToken.deleteMany({ where: { userId: { in: userIds } } });
+        await tx.session.deleteMany({ where: { userId: { in: userIds } } });
+        await tx.adminAccount.deleteMany({ where: { userId: { in: userIds } } });
+        await tx.user.deleteMany({ where: { id: { in: userIds } } });
+      });
+    }
     await prisma.$disconnect();
   }
 });

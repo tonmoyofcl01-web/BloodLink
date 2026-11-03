@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:4000/api/v1';
+const API = import.meta.env.VITE_API_URL || '/api/v1';
 const icons = {
   DONOR_OPPORTUNITY: '🩸', DONOR_ACCEPTED: '✓', DONOR_DECLINED: '↗', DONOR_WITHDREW: '↩', REQUEST_STATUS: '⚑',
   ORGANIZATION_SUBMITTED: '▣', ORGANIZATION_APPROVED: '✓', ORGANIZATION_REJECTED: '!', ORGANIZATION_SUSPENDED: '⏸',

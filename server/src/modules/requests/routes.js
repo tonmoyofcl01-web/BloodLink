@@ -108,7 +108,7 @@ export function createRequestRouter({ prisma, requireAuth }) {
       const id = z.string().uuid().parse(req.params.id);
       const request = await prisma.bloodRequest.findFirst({ where: { id, requesterUserId: req.auth.userId }, select: { id: true } });
       if (!request) return res.status(404).json({ error: { code: 'REQUEST_NOT_FOUND', message: 'Blood request not found.' } });
-      await expireRequestIfNeeded(prisma, id);
+      await prisma.$transaction((tx) => expireRequestIfNeeded(tx, id));
       const rows = await prisma.requestMatch.findMany({
         where: { requestId: id },
         select: { matchStatus: true, locationRank: true, notifiedAt: true, respondedAt: true, updatedAt: true },
@@ -141,20 +141,24 @@ export function createRequestRouter({ prisma, requireAuth }) {
     try {
       const id = z.string().uuid().parse(req.params.id);
       const input = requestSchema.parse(req.body);
-      const existing = await prisma.bloodRequest.findFirst({ where: { id, requesterUserId: req.auth.userId }, select: { id: true, status: true } });
-      if (!existing) return res.status(404).json({ error: { code: 'REQUEST_NOT_FOUND', message: 'Blood request not found.' } });
-      if (!['OPEN', 'PAUSED'].includes(existing.status)) return res.status(409).json({ error: { code: 'REQUEST_NOT_EDITABLE', message: 'Only open or paused requests can be edited.' } });
-      const group = await prisma.bloodGroup.findUnique({ where: { code: input.bloodGroup }, select: { id: true } });
-      if (!group) return res.status(503).json({ error: { code: 'REFERENCE_DATA_MISSING', message: 'Blood group data is unavailable.' } });
-      await prisma.bloodRequest.update({ where: { id }, data: {
-        bloodGroupId: group.id, unitsRequested: input.unitsRequested,
-        division: input.division, district: input.district, area: input.area,
-        urgency: input.urgency, neededAt: new Date(input.neededAt),
-        facilityName: input.facilityName, publicNote: input.publicNote,
-      } });
-      const matching = existing.status === 'OPEN' ? await generatePotentialMatches(prisma, id) : null;
-      const request = await prisma.bloodRequest.findFirst({ where: { id, requesterUserId: req.auth.userId }, select: requestSelect });
-      res.json({ request: serializeRequest(request), matching });
+      const result = await prisma.$transaction(async (tx) => {
+        const existing = await tx.bloodRequest.findFirst({ where: { id, requesterUserId: req.auth.userId }, select: { id: true, status: true } });
+        if (!existing) return { error: 'REQUEST_NOT_FOUND', status: 404 };
+        if (!['OPEN', 'PAUSED'].includes(existing.status)) return { error: 'REQUEST_NOT_EDITABLE', status: 409 };
+        const group = await tx.bloodGroup.findUnique({ where: { code: input.bloodGroup }, select: { id: true } });
+        if (!group) return { error: 'REFERENCE_DATA_MISSING', status: 503 };
+        await tx.bloodRequest.update({ where: { id }, data: {
+          bloodGroupId: group.id, unitsRequested: input.unitsRequested,
+          division: input.division, district: input.district, area: input.area,
+          urgency: input.urgency, neededAt: new Date(input.neededAt),
+          facilityName: input.facilityName, publicNote: input.publicNote,
+        } });
+        const matching = existing.status === 'OPEN' ? await generatePotentialMatches(tx, id) : null;
+        const request = await tx.bloodRequest.findFirst({ where: { id, requesterUserId: req.auth.userId }, select: requestSelect });
+        return { request, matching };
+      }, { isolationLevel: 'Serializable' });
+      if (result.error) return res.status(result.status).json({ error: { code: result.error, message: result.error === 'REQUEST_NOT_FOUND' ? 'Blood request not found.' : result.error === 'REQUEST_NOT_EDITABLE' ? 'Only open or paused requests can be edited.' : 'Blood group data is unavailable.' } });
+      res.json({ request: serializeRequest(result.request), matching: result.matching });
     } catch (error) { next(error); }
   });
 
@@ -162,20 +166,29 @@ export function createRequestRouter({ prisma, requireAuth }) {
     try {
       const id = z.string().uuid().parse(req.params.id);
       const { status } = requesterTransitionSchema.parse(req.body);
-      const existing = await prisma.bloodRequest.findFirst({ where: { id, requesterUserId: req.auth.userId }, select: { id: true, status: true } });
-      if (!existing) return res.status(404).json({ error: { code: 'REQUEST_NOT_FOUND', message: 'Blood request not found.' } });
-      if (!transitions[existing.status].includes(status)) return res.status(409).json({ error: { code: 'INVALID_STATUS_TRANSITION', message: `Cannot change a ${existing.status.toLowerCase()} request to ${status.toLowerCase()}.` } });
-      const changed = await prisma.bloodRequest.updateMany({
-        where: { id, requesterUserId: req.auth.userId, status: existing.status },
-        data: { status, closedAt: ['CANCELLED', 'CLOSED', 'FULFILLED'].includes(status) ? new Date() : null },
-      });
-      if (changed.count !== 1) return res.status(409).json({ error: { code: 'INVALID_STATUS_TRANSITION', message: 'Request status changed; reload and try again.' } });
-      let matching = null;
-      if (status === 'OPEN') matching = await generatePotentialMatches(prisma, id);
-      if (['CANCELLED', 'CLOSED', 'FULFILLED'].includes(status)) await closePendingMatches(prisma, id, 'CLOSED');
-      const request = await prisma.bloodRequest.findFirst({ where: { id, requesterUserId: req.auth.userId }, select: requestSelect });
-      await notifyRequestStatus(prisma, id, status, request.updatedAt);
-      res.json({ request: serializeRequest(request), matching });
+      const result = await prisma.$transaction(async (tx) => {
+        const existing = await tx.bloodRequest.findFirst({ where: { id, requesterUserId: req.auth.userId }, select: { id: true, status: true } });
+        if (!existing) return { error: 'REQUEST_NOT_FOUND', statusCode: 404 };
+        if (!transitions[existing.status].includes(status)) return { error: 'INVALID_STATUS_TRANSITION', statusCode: 409, previous: existing.status };
+        const changed = await tx.bloodRequest.updateMany({
+          where: { id, requesterUserId: req.auth.userId, status: existing.status },
+          data: { status, closedAt: ['CANCELLED', 'CLOSED', 'FULFILLED'].includes(status) ? new Date() : null },
+        });
+        if (changed.count !== 1) return { error: 'INVALID_STATUS_TRANSITION', statusCode: 409 };
+        let matching = null;
+        if (status === 'OPEN') matching = await generatePotentialMatches(tx, id);
+        if (['CANCELLED', 'CLOSED', 'FULFILLED'].includes(status)) await closePendingMatches(tx, id, 'CLOSED');
+        const request = await tx.bloodRequest.findFirst({ where: { id, requesterUserId: req.auth.userId }, select: requestSelect });
+        await notifyRequestStatus(tx, id, status, request.updatedAt);
+        return { request, matching };
+      }, { isolationLevel: 'Serializable' });
+      if (result.error) {
+        const message = result.error === 'REQUEST_NOT_FOUND' ? 'Blood request not found.'
+          : result.previous ? `Cannot change a ${result.previous.toLowerCase()} request to ${status.toLowerCase()}.`
+            : 'Request status changed; reload and try again.';
+        return res.status(result.statusCode).json({ error: { code: result.error, message } });
+      }
+      res.json({ request: serializeRequest(result.request), matching: result.matching });
     } catch (error) { next(error); }
   });
 

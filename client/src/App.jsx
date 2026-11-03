@@ -5,7 +5,7 @@ import MyOpportunities from './features/donors/MyOpportunities.jsx';
 import NotificationsPage, { NotificationBell } from './features/notifications/NotificationsCenter.jsx';
 import OrganizationWorkspace, { OrganizationAdminWorkspace } from './features/organizations/OrganizationWorkspace.jsx';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:4000/api/v1';
+const API = import.meta.env.VITE_API_URL || '/api/v1';
 const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 const EMPTY_PROFILE = { displayName: '', bloodGroup: 'O+', division: '', district: '', area: '' };
 
@@ -14,6 +14,8 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
+  const [verificationEmail, setVerificationEmail] = useState('');
+  const [resendBusy, setResendBusy] = useState(false);
   const [dark, setDark] = useState(() => window.localStorage.getItem('bloodlink-theme') === 'dark');
 
   useEffect(() => {
@@ -44,6 +46,7 @@ export default function App() {
     setMessage('');
     setBusy(true);
     const body = Object.fromEntries(new FormData(event.currentTarget).entries());
+    if (mode === 'register') setVerificationEmail(body.email);
     try {
       const response = await fetch(`${API}/auth/${mode === 'register' ? 'register' : 'login'}`, {
         method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -51,9 +54,21 @@ export default function App() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error?.message || 'Unable to complete request.');
       if (data.user) setUser(data.user);
-      setMessage(mode === 'register' ? 'Account created. Check the development server output for the verification link.' : 'Signed in successfully.');
+      setMessage(mode === 'register' ? 'Account created. Check your email for verification instructions.' : 'Signed in successfully.');
     } catch (error) { setMessage(error.message); }
     finally { setBusy(false); }
+  }
+
+  async function resendVerification() {
+    setResendBusy(true);
+    setMessage('');
+    try {
+      const response = await fetch(`${API}/auth/resend-verification`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: verificationEmail }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error?.message || 'Could not resend verification instructions.');
+      setMessage(data.message);
+    } catch (error) { setMessage(error.message); }
+    finally { setResendBusy(false); }
   }
 
   async function logout() {
@@ -86,6 +101,7 @@ export default function App() {
             <button onClick={() => { setMode(mode === 'register' ? 'login' : 'register'); setMessage(''); }} className="mt-5 text-sm font-medium text-rose-700 hover:underline dark:text-rose-300">
               {mode === 'register' ? 'Already have an account? Sign in' : 'New to BloodLink? Create an account'}
             </button>
+            {mode === 'register' && verificationEmail && <button type="button" onClick={resendVerification} disabled={resendBusy} className="ml-4 mt-5 text-sm font-medium text-teal-700 hover:underline disabled:opacity-50 dark:text-teal-300">{resendBusy ? 'Sending…' : 'Resend verification email'}</button>}
           </div>
         </section>
       )}

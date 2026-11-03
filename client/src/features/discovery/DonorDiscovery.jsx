@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:4000/api/v1';
+const API = import.meta.env.VITE_API_URL || '/api/v1';
 const GROUPS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 const inputClass = 'mt-1.5 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100';
 

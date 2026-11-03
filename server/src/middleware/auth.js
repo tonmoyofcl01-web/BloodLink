@@ -1,9 +1,9 @@
 import { hashSecret } from '../lib/crypto.js';
 
-export function createAuthMiddleware(prisma) {
+export function createAuthMiddleware(prisma, env = {}) {
   async function optionalAuth(req, _res, next) {
     try {
-      const token = req.cookies?.[process.env.SESSION_COOKIE_NAME || 'bloodlink_session'];
+      const token = req.cookies?.[env.SESSION_COOKIE_NAME || process.env.SESSION_COOKIE_NAME || 'bloodlink_session'];
       if (!token) return next();
       const session = await prisma.session.findUnique({
         where: { secretHash: hashSecret(token) },

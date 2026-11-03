@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:4000/api/v1';
+const API = import.meta.env.VITE_API_URL || '/api/v1';
 const GROUPS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 const STATUSES = ['OPEN', 'PAUSED', 'CANCELLED', 'CLOSED', 'EXPIRED', 'FULFILLED'];
 

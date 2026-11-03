@@ -124,10 +124,12 @@ export function createDonorRouter({ prisma, requireAuth }) {
       const now = new Date();
       for (const row of rows) {
         if (row.matchStatus !== 'NOTIFIED') continue;
-        if (row.request.neededAt <= now) await expireRequestIfNeeded(prisma, row.requestId, now);
-        if (row.request.status !== 'OPEN' && row.request.status !== 'PAUSED') {
-          await prisma.requestMatch.updateMany({ where: { id: row.id, matchStatus: 'NOTIFIED' }, data: { matchStatus: 'CLOSED', respondedAt: now } });
-        }
+        await prisma.$transaction(async (tx) => {
+          if (row.request.neededAt <= now) await expireRequestIfNeeded(tx, row.requestId, now);
+          if (row.request.status !== 'OPEN' && row.request.status !== 'PAUSED') {
+            await tx.requestMatch.updateMany({ where: { id: row.id, matchStatus: 'NOTIFIED' }, data: { matchStatus: 'CLOSED', respondedAt: now } });
+          }
+        }, { isolationLevel: 'Serializable' });
       }
       res.json({
         opportunities: rows.map((row) => {

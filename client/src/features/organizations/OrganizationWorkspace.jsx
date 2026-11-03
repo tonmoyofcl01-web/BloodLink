@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:4000/api/v1';
+const API = import.meta.env.VITE_API_URL || '/api/v1';
 const inputClass = 'mt-1.5 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100';
 const emptyApplication = { name: '', type: 'HOSPITAL', registrationNumber: '', division: '', district: '', area: '', publicContactPhone: '', verificationInfo: '' };
 
@@ -96,6 +96,7 @@ export function OrganizationAdminWorkspace({ focusOrganizationId }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
+  const dialogRef = useRef(null);
 
   async function load() {
     setLoading(true); setError('');
@@ -116,6 +117,23 @@ export function OrganizationAdminWorkspace({ focusOrganizationId }) {
     setSelected(data.organization);
   }
   useEffect(() => { load(); }, [status, focusOrganizationId]);
+  useEffect(() => {
+    if (!decision || !dialogRef.current) return undefined;
+    const dialog = dialogRef.current;
+    const focusable = () => [...dialog.querySelectorAll('button:not([disabled]), textarea:not([disabled])')];
+    focusable()[0]?.focus();
+    function handleKeyDown(event) {
+      if (event.key === 'Escape') { setDecision(null); setReason(''); }
+      if (event.key === 'Tab') {
+        const controls = focusable();
+        if (!controls.length) return;
+        if (event.shiftKey && document.activeElement === controls[0]) { event.preventDefault(); controls.at(-1).focus(); }
+        else if (!event.shiftKey && document.activeElement === controls.at(-1)) { event.preventDefault(); controls[0].focus(); }
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [decision]);
 
   async function applyDecision() {
     setSaving(true); setError(''); setMessage('');
@@ -133,7 +151,7 @@ export function OrganizationAdminWorkspace({ focusOrganizationId }) {
     <label className="text-sm font-semibold">Application status<select value={status} onChange={(event) => setStatus(event.target.value)} className={`${inputClass} max-w-xs`}><option>PENDING</option><option>VERIFIED</option><option>REJECTED</option><option>SUSPENDED</option></select></label>
     {loading ? <p className="rounded-2xl bg-white p-6 text-slate-500 shadow-sm dark:bg-slate-900">Loading applications…</p> : organizations.length === 0 ? <p className="rounded-2xl bg-white p-8 text-center text-slate-500 shadow-sm dark:bg-slate-900">No {status.toLowerCase()} organizations.</p> : <div className="grid gap-5 lg:grid-cols-[0.8fr_1.2fr]"><ul className="space-y-2">{organizations.map((organization) => <li key={organization.id}><button onClick={() => inspect(organization.id).catch((reasonValue) => setError(reasonValue.message))} className={`w-full rounded-xl border p-4 text-left ${selected?.id === organization.id ? 'border-teal-500 bg-teal-50 dark:bg-teal-950/30' : 'border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900'}`}><span className="flex justify-between gap-2 font-semibold">{organization.name}<VerificationBadge status={organization.status} /></span><span className="mt-1 block text-xs text-slate-500">{organization.type.replace('_', ' ')} · {organization.district}</span></button></li>)}</ul>
       {selected && <article className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800"><header className="flex flex-wrap items-start justify-between gap-2"><div><h3 className="text-xl font-bold">{selected.name}</h3><p className="mt-1 text-sm text-slate-500">Submitted by {selected.creator.fullName} · {selected.creator.email}</p></div><VerificationBadge status={selected.status} /></header><dl className="mt-5 grid gap-4 text-sm sm:grid-cols-2">{[['Type', selected.type], ['Registration number', selected.registrationNumber], ['Location', `${selected.area}, ${selected.district}, ${selected.division}`], ['Public phone', selected.publicContactPhone], ['Verification information', selected.verificationInfo || 'None provided']].map(([label, value]) => <div key={label}><dt className="text-xs font-semibold uppercase text-slate-500">{label}</dt><dd className="mt-1 break-words font-medium">{value}</dd></div>)}</dl><h4 className="mt-6 font-semibold">Verification history</h4><ul className="mt-2 space-y-2 text-sm">{selected.verificationHistory.map((event) => <li key={`${event.action}-${event.createdAt}`} className="rounded-lg bg-slate-50 p-3 dark:bg-slate-800"><strong>{event.action}</strong><span className="ml-2 text-slate-500">{new Date(event.createdAt).toLocaleString()}</span>{event.reason && <p className="mt-1 text-slate-600 dark:text-slate-300">{event.reason}</p>}</li>)}</ul><div className="mt-5 flex flex-wrap gap-2">{selected.status === 'PENDING' && <><button onClick={() => setDecision('APPROVE')} className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white">Approve</button><button onClick={() => setDecision('REJECT')} className="rounded-lg bg-rose-700 px-4 py-2 text-sm font-semibold text-white">Reject</button></>}{selected.status === 'VERIFIED' && <button onClick={() => setDecision('SUSPEND')} className="rounded-lg bg-rose-700 px-4 py-2 text-sm font-semibold text-white">Suspend organization</button>}</div></article>}</div>}
-    {decision && <div className="fixed inset-0 z-40 grid place-items-center bg-slate-950/50 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setDecision(null); }}><section role="dialog" aria-modal="true" aria-labelledby="decision-title" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900"><h3 id="decision-title" className="text-xl font-bold">Confirm {decision.toLowerCase()}</h3><p className="mt-2 text-sm text-slate-600 dark:text-slate-300">This change will be recorded in the organization’s verification history.</p>{decision !== 'APPROVE' && <label className="mt-4 block text-sm font-medium">Reason<textarea value={reason} onChange={(event) => setReason(event.target.value)} maxLength="500" rows="3" required className={inputClass} /></label>}<div className="mt-5 flex justify-end gap-2"><button onClick={() => { setDecision(null); setReason(''); }} className="rounded-lg border border-slate-300 px-4 py-2 font-semibold dark:border-slate-700">Cancel</button><button disabled={saving || (decision !== 'APPROVE' && !reason.trim())} onClick={applyDecision} className="rounded-lg bg-rose-700 px-4 py-2 font-semibold text-white disabled:opacity-50">{saving ? 'Saving…' : `Confirm ${decision.toLowerCase()}`}</button></div></section></div>}
+    {decision && <div className="fixed inset-0 z-40 grid place-items-center bg-slate-950/50 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setDecision(null); }}><section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="decision-title" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900"><h3 id="decision-title" className="text-xl font-bold">Confirm {decision.toLowerCase()}</h3><p className="mt-2 text-sm text-slate-600 dark:text-slate-300">This change will be recorded in the organization’s verification history.</p>{decision !== 'APPROVE' && <label className="mt-4 block text-sm font-medium">Reason<textarea value={reason} onChange={(event) => setReason(event.target.value)} maxLength="500" rows="3" required className={inputClass} /></label>}<div className="mt-5 flex justify-end gap-2"><button onClick={() => { setDecision(null); setReason(''); }} className="rounded-lg border border-slate-300 px-4 py-2 font-semibold dark:border-slate-700">Cancel</button><button disabled={saving || (decision !== 'APPROVE' && !reason.trim())} onClick={applyDecision} className="rounded-lg bg-rose-700 px-4 py-2 font-semibold text-white disabled:opacity-50">{saving ? 'Saving…' : `Confirm ${decision.toLowerCase()}`}</button></div></section></div>}
   </section>;
 }
 

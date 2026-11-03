@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
-    "test": "node --test src/lib/validation.test.js src/middleware/auth.test.js src/modules/auth/routes.test.js src/modules/donors/routes.test.js src/modules/donors/discovery.test.js src/modules/donors/opportunities.test.js src/modules/requests/routes.test.js src/modules/matching/service.test.js src/modules/notifications/routes.test.js src/modules/organizations/routes.test.js",
+    "test": "node --test src/lib/validation.test.js src/lib/email.test.js src/middleware/auth.test.js src/middleware/security.test.js src/modules/auth/routes.test.js src/modules/donors/routes.test.js src/modules/donors/discovery.test.js src/modules/donors/opportunities.test.js src/modules/requests/routes.test.js src/modules/matching/service.test.js src/modules/notifications/routes.test.js src/modules/organizations/routes.test.js",
     "test:db": "node --test src/db/database.test.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
@@ -22,6 +22,7 @@
     "express": "^5.1.0",
     "express-rate-limit": "^7.5.0",
     "helmet": "^8.0.0",
+    "nodemailer": "^10.3.1",
     "zod": "^4.6.6"
   },
   "devDependencies": {

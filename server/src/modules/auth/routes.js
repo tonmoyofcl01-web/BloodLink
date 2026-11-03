@@ -2,7 +2,7 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { hashSecret, newSecret } from '../../lib/crypto.js';
-import { sendVerificationEmail } from '../../lib/email.js';
+import { createEmailAdapter } from '../../lib/email.js';
 
 export const registerSchema = z.object({
   email: z.string().trim().email().max(254),
@@ -11,7 +11,7 @@ export const registerSchema = z.object({
 }).strict();
 export const loginSchema = z.object({ email: z.string().trim().email().max(254), password: z.string().min(1).max(128) }).strict();
 
-export function createAuthRouter({ prisma, env }) {
+export function createAuthRouter({ prisma, env, emailAdapter = createEmailAdapter(env) }) {
   const router = Router();
   const cookieOptions = {
     httpOnly: true, secure: env.SESSION_COOKIE_SECURE === 'true', sameSite: 'lax',
@@ -20,7 +20,6 @@ export function createAuthRouter({ prisma, env }) {
 
   router.post('/register', async (req, res, next) => {
     try {
-      if (env.NODE_ENV === 'production') return res.status(503).json({ error: { code: 'EMAIL_NOT_CONFIGURED', message: 'Account registration is temporarily unavailable.' } });
       const input = registerSchema.parse(req.body);
       const email = input.email.toLowerCase();
       const passwordHash = await bcrypt.hash(input.password, 12);
@@ -33,10 +32,10 @@ export function createAuthRouter({ prisma, env }) {
         return created;
       });
       const verifyUrl = `${env.CLIENT_ORIGIN}/verify-email?token=${encodeURIComponent(rawToken)}`;
-      await sendVerificationEmail({ email, url: verifyUrl });
+      await emailAdapter({ email, url: verifyUrl });
       return res.status(201).json({ message: 'Account created. Verify your email before signing in.' });
     } catch (error) {
-      if (error?.code === 'P2002') return res.status(202).json({ message: 'If this email can be registered, verification instructions will be available through the development email adapter.' });
+      if (error?.code === 'P2002') return res.status(202).json({ message: 'If this address can be registered, verification instructions have been sent.' });
       next(error);
     }
   });
@@ -47,11 +46,34 @@ export function createAuthRouter({ prisma, env }) {
       const tokenHash = hashSecret(token);
       const record = await prisma.emailVerificationToken.findUnique({ where: { tokenHash } });
       if (!record || record.usedAt || record.expiresAt <= new Date()) return res.status(400).json({ error: { code: 'INVALID_TOKEN', message: 'Verification link is invalid or expired.' } });
-      await prisma.$transaction([
-        prisma.emailVerificationToken.update({ where: { id: record.id }, data: { usedAt: new Date() } }),
-        prisma.user.update({ where: { id: record.userId }, data: { status: 'ACTIVE', emailVerifiedAt: new Date() } }),
-      ]);
+      const verified = await prisma.$transaction(async (tx) => {
+        const used = await tx.emailVerificationToken.updateMany({ where: { id: record.id, usedAt: null, expiresAt: { gt: new Date() } }, data: { usedAt: new Date() } });
+        if (used.count !== 1) return false;
+        const activated = await tx.user.updateMany({ where: { id: record.userId, status: 'PENDING_VERIFICATION', deletedAt: null }, data: { status: 'ACTIVE', emailVerifiedAt: new Date() } });
+        return activated.count === 1;
+      });
+      if (!verified) return res.status(400).json({ error: { code: 'INVALID_TOKEN', message: 'Verification link is invalid or expired.' } });
       res.json({ message: 'Email verified. You can now sign in.' });
+    } catch (error) { next(error); }
+  });
+
+  router.post('/resend-verification', async (req, res, next) => {
+    try {
+      const { email: rawEmail } = z.object({ email: z.string().trim().email().max(254) }).strict().parse(req.body);
+      const email = rawEmail.toLowerCase();
+      const user = await prisma.user.findUnique({ where: { email }, select: { id: true, status: true, deletedAt: true } });
+      if (user && user.status === 'PENDING_VERIFICATION' && !user.deletedAt) {
+        const rawToken = newSecret();
+        await prisma.$transaction(async (tx) => {
+          await tx.emailVerificationToken.updateMany({ where: { userId: user.id, usedAt: null }, data: { usedAt: new Date() } });
+          await tx.emailVerificationToken.create({ data: {
+            userId: user.id, tokenHash: hashSecret(rawToken), expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+          } });
+        });
+        const verifyUrl = `${env.CLIENT_ORIGIN}/verify-email?token=${encodeURIComponent(rawToken)}`;
+        await emailAdapter({ email, url: verifyUrl });
+      }
+      res.status(202).json({ message: 'If the address needs verification, new instructions have been sent.' });
     } catch (error) { next(error); }
   });
 
@@ -83,7 +105,7 @@ export function createAuthRouter({ prisma, env }) {
       const token = req.cookies?.[env.SESSION_COOKIE_NAME];
       if (!token) return res.status(401).json({ error: { code: 'UNAUTHENTICATED', message: 'Sign in is required.' } });
       const session = await prisma.session.findUnique({ where: { secretHash: hashSecret(token) }, include: { user: { include: { adminAccount: true } } } });
-      if (!session || session.revokedAt || session.expiresAt <= new Date() || session.user.status !== 'ACTIVE') return res.status(401).json({ error: { code: 'UNAUTHENTICATED', message: 'Sign in is required.' } });
+      if (!session || session.revokedAt || session.expiresAt <= new Date() || session.user.status !== 'ACTIVE' || session.user.deletedAt) return res.status(401).json({ error: { code: 'UNAUTHENTICATED', message: 'Sign in is required.' } });
       res.json({ user: { id: session.user.id, fullName: session.user.fullName, email: session.user.email, isAdmin: Boolean(session.user.adminAccount && !session.user.adminAccount.revokedAt) } });
     } catch (error) { next(error); }
   });
