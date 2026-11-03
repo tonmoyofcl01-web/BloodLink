@@ -1,0 +1,16 @@
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: bloodlink
+      MYSQL_USER: bloodlink
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-bloodlink-local-password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-bloodlink-local-root-password}
+    ports:
+      - "3306:3306"
+    volumes:
+      - bloodlink_mysql:/var/lib/mysql
+
+volumes:
+  bloodlink_mysql:

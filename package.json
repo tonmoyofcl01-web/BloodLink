@@ -1,0 +1,20 @@
+{
+  "name": "bloodlink",
+  "private": true,
+  "type": "module",
+  "workspaces": ["client", "server"],
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:client": "npm --workspace client run dev",
+    "dev:server": "npm --workspace server run dev",
+    "build": "npm --workspace client run build",
+    "test": "npm --workspace server test",
+    "test:db": "npm --workspace server run test:db",
+    "db:generate": "npm --workspace server run db:generate",
+    "db:migrate": "npm --workspace server run db:migrate",
+    "admin:bootstrap": "npm --workspace server run admin:bootstrap"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

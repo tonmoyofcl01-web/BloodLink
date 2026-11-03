@@ -1,0 +1,7 @@
+node_modules/
+.npm-cache/
+client/dist/
+server/.env
+.env
+coverage/
+npm-debug.log*
