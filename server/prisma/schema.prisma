@@ -15,6 +15,11 @@ enum UserStatus {
   DELETED
 }
 
+enum DonorAvailabilityStatus {
+  AVAILABLE
+  PAUSED
+}
+
 model User {
   id               String                  @id @default(uuid()) @db.Char(36)
   email            String                  @unique @db.VarChar(254)
@@ -29,9 +34,41 @@ model User {
   emailTokens      EmailVerificationToken[]
   adminAccount     AdminAccount?
   grantedAdmins   AdminAccount[]          @relation("AdminGrantor")
+  donorProfile     DonorProfile?
 
   @@index([status, createdAt])
   @@map("users")
+}
+
+model BloodGroup {
+  id            Int            @id @default(autoincrement()) @db.UnsignedSmallInt
+  code          String         @unique @db.VarChar(3)
+  displayName   String         @map("display_name") @db.VarChar(30)
+  donorProfiles DonorProfile[]
+
+  @@map("blood_groups")
+}
+
+model DonorProfile {
+  id                    String                  @id @default(uuid()) @db.Char(36)
+  userId                String                  @unique @map("user_id") @db.Char(36)
+  displayName           String                  @map("display_name") @db.VarChar(120)
+  bloodGroupId          Int                     @map("blood_group_id") @db.UnsignedSmallInt
+  division              String                  @db.VarChar(80)
+  district              String                  @db.VarChar(80)
+  area                  String                  @db.VarChar(100)
+  availabilityStatus    DonorAvailabilityStatus @default(PAUSED) @map("availability_status")
+  discoveryConsentAt    DateTime?               @map("discovery_consent_at") @db.DateTime(3)
+  consentVersion        String?                 @map("consent_version") @db.VarChar(32)
+  consentUpdatedAt      DateTime?               @map("consent_updated_at") @db.DateTime(3)
+  createdAt             DateTime                @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt             DateTime                @updatedAt @map("updated_at") @db.DateTime(3)
+  user                  User                    @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  bloodGroup            BloodGroup              @relation(fields: [bloodGroupId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([bloodGroupId, availabilityStatus, discoveryConsentAt], map: "donor_profiles_blood_group_avail_consent_idx")
+  @@index([division, district, area])
+  @@map("donor_profiles")
 }
 
 model Session {

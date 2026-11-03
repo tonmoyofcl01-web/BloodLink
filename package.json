@@ -12,6 +12,7 @@
     "test:db": "npm --workspace server run test:db",
     "db:generate": "npm --workspace server run db:generate",
     "db:migrate": "npm --workspace server run db:migrate",
+    "db:seed": "npm --workspace server run db:seed",
     "admin:bootstrap": "npm --workspace server run admin:bootstrap"
   },
   "devDependencies": {

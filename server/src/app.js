@@ -4,6 +4,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { createAuthRouter } from './modules/auth/routes.js';
+import { createDonorRouter } from './modules/donors/routes.js';
 import { createAuthMiddleware } from './middleware/auth.js';
 import { errorHandler, notFound } from './middleware/errors.js';
 
@@ -30,6 +31,7 @@ export function createApp({ prisma, env }) {
   const auth = createAuthMiddleware(prisma);
   app.use('/api/v1', auth.optionalAuth);
   app.use('/api/v1/auth', createAuthRouter({ prisma, env }));
+  app.use('/api/v1/donors', createDonorRouter({ prisma, requireAuth: auth.requireAuth }));
   app.use(notFound);
   app.use(errorHandler);
   return app;
