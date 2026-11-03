@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import RequestWorkspace from './features/requests/RequestWorkspace.jsx';
+import DonorDiscovery from './features/discovery/DonorDiscovery.jsx';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:4000/api/v1';
 const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
@@ -61,7 +63,7 @@ export default function App() {
       <div className="mx-auto flex max-w-6xl justify-end">
         <ThemeToggle dark={dark} onToggle={() => setDark((value) => !value)} />
       </div>
-      {user ? <DonorManager key={user.id} user={user} onLogout={logout} /> : (
+      {user ? <UserWorkspace key={user.id} user={user} onLogout={logout} /> : (
         <section className="mx-auto mt-6 grid max-w-5xl overflow-hidden rounded-3xl bg-white shadow-xl shadow-slate-200/70 dark:bg-slate-900 dark:shadow-black/20 md:grid-cols-2">
           <div className="bg-rose-700 p-10 text-white md:p-14">
             <p className="text-sm font-semibold uppercase tracking-[0.2em] text-rose-100">BloodLink</p>
@@ -88,7 +90,26 @@ export default function App() {
   );
 }
 
-function DonorManager({ user, onLogout }) {
+function UserWorkspace({ user, onLogout }) {
+  const [view, setView] = useState('profile');
+  const navItems = [
+    ['profile', 'Donor Profile'],
+    ['requests', 'Blood Requests'],
+    ['discovery', 'Donor Discovery'],
+  ];
+  return <div className="mx-auto mt-6 max-w-6xl">
+    <header className="mb-6 flex flex-wrap items-center justify-between gap-4">
+      <div><p className="text-sm font-semibold uppercase tracking-[0.18em] text-teal-700 dark:text-teal-300">BloodLink account</p><h1 className="mt-1 text-2xl font-bold">Hello, {user.fullName}</h1></div>
+      <button onClick={onLogout} className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold hover:bg-white dark:border-slate-700 dark:hover:bg-slate-900">Sign out</button>
+    </header>
+    <nav aria-label="BloodLink workspace" className="mb-6 flex gap-2 overflow-x-auto rounded-2xl bg-slate-200 p-1.5 dark:bg-slate-900">
+      {navItems.map(([value, label]) => <button key={value} onClick={() => setView(value)} aria-current={view === value ? 'page' : undefined} className={`whitespace-nowrap rounded-xl px-4 py-2.5 text-sm font-semibold transition ${view === value ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white' : 'text-slate-600 hover:bg-white/60 dark:text-slate-300 dark:hover:bg-slate-800'}`}>{label}</button>)}
+    </nav>
+    {view === 'profile' ? <DonorManager user={user} /> : view === 'requests' ? <RequestWorkspace /> : <DonorDiscovery />}
+  </div>;
+}
+
+function DonorManager({ user }) {
   const [profile, setProfile] = useState(null);
   const [form, setForm] = useState({ ...EMPTY_PROFILE, displayName: user.fullName });
   const [loading, setLoading] = useState(true);
@@ -161,16 +182,7 @@ function DonorManager({ user, onLogout }) {
   }
 
   return (
-    <section className="mx-auto mt-6 max-w-4xl">
-      <header className="mb-8 flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-rose-700 dark:text-rose-300">BloodLink account</p>
-          <h1 className="mt-2 text-3xl font-bold">Donor profile</h1>
-          <p className="mt-1 text-slate-600 dark:text-slate-300">Signed in as {user.fullName}</p>
-        </div>
-        <button onClick={onLogout} className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold hover:bg-white dark:border-slate-700 dark:hover:bg-slate-900">Sign out</button>
-      </header>
-
+    <section className="mx-auto max-w-4xl">
       {loading ? <p className="rounded-2xl bg-white p-6 text-slate-600 shadow-sm dark:bg-slate-900 dark:text-slate-300">Loading your profile…</p> : (
         <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
           <form onSubmit={saveProfile} className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800 sm:p-8">

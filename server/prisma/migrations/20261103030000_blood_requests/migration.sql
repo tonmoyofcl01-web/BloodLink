@@ -1,0 +1,23 @@
+CREATE TABLE `blood_requests` (
+  `id` CHAR(36) NOT NULL,
+  `requester_user_id` CHAR(36) NOT NULL,
+  `blood_group_id` SMALLINT UNSIGNED NOT NULL,
+  `units_requested` SMALLINT UNSIGNED NOT NULL,
+  `division` VARCHAR(80) NOT NULL,
+  `district` VARCHAR(80) NOT NULL,
+  `area` VARCHAR(100) NOT NULL,
+  `urgency` ENUM('URGENT', 'SCHEDULED') NOT NULL,
+  `needed_at` DATETIME(3) NOT NULL,
+  `facility_name` VARCHAR(180) NULL,
+  `public_note` VARCHAR(500) NULL,
+  `status` ENUM('OPEN', 'PAUSED', 'CANCELLED', 'CLOSED') NOT NULL DEFAULT 'OPEN',
+  `closed_at` DATETIME(3) NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL,
+  PRIMARY KEY (`id`),
+  INDEX `blood_requests_requester_user_id_created_at_idx` (`requester_user_id`, `created_at`),
+  INDEX `blood_requests_status_needed_at_created_at_idx` (`status`, `needed_at`, `created_at`),
+  INDEX `blood_requests_blood_group_id_division_district_area_status_idx` (`blood_group_id`, `division`, `district`, `area`, `status`),
+  CONSTRAINT `blood_requests_requester_user_id_fkey` FOREIGN KEY (`requester_user_id`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `blood_requests_blood_group_id_fkey` FOREIGN KEY (`blood_group_id`) REFERENCES `blood_groups` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

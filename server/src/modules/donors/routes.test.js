@@ -38,6 +38,16 @@ function donorPrisma({ ownerId = 'owner-user', initialProfile = null } = {}) {
         if (data.bloodGroupId) profile.bloodGroup = [...groupByCode.values()].find((group) => group.id === data.bloodGroupId);
         return profile;
       },
+      findMany: async ({ where, skip, take }) => profile
+        && profile.bloodGroupId === where.bloodGroupId && profile.division === where.division
+        && (!where.district || profile.district === where.district) && (!where.area || profile.area === where.area)
+        && profile.availabilityStatus === where.availabilityStatus && profile.discoveryConsentAt
+        ? [{ displayName: profile.displayName, bloodGroup: { code: profile.bloodGroup.code }, email: 'private@example.invalid', exactAddress: 'Private address' }].slice(skip, skip + take)
+        : [],
+      count: async ({ where }) => profile
+        && profile.bloodGroupId === where.bloodGroupId && profile.division === where.division
+        && (!where.district || profile.district === where.district) && (!where.area || profile.area === where.area)
+        && profile.availabilityStatus === where.availabilityStatus && profile.discoveryConsentAt ? 1 : 0,
     },
   };
 }
@@ -104,7 +114,11 @@ test('a different signed-in user cannot read or modify another donor profile', a
     assert.deepEqual(await read.json(), { profile: null });
     const update = await fetch(`${base}/api/v1/donors/me`, { method: 'PUT', headers, body: JSON.stringify(profileInput({ displayName: 'Intruder' })) });
     assert.equal(update.status, 404);
-    const discovery = await fetch(`${base}/api/v1/donors/discover`, { headers });
-    assert.equal(discovery.status, 404);
+    const discovery = await fetch(`${base}/api/v1/donors/discover?bloodGroup=O-&division=Private%20Division&district=Private%20District&area=Private%20Area`, { headers });
+    assert.equal(discovery.status, 200);
+    const candidates = await discovery.json();
+    assert.deepEqual(candidates.donors, [{ bloodGroup: 'O-', locationMatch: 'AREA' }]);
+    assert.equal(JSON.stringify(candidates).includes('Private Area'), false);
+    assert.equal(JSON.stringify(candidates).includes('private@example'), false);
   });
 });

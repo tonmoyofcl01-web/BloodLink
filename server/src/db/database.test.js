@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { env } from '../config/env.js';
 
@@ -14,13 +15,13 @@ test('configured MySQL database is reachable and all migrations are applied', as
 
     const rows = await prisma.$queryRaw`SELECT TABLE_NAME AS tableName FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'`;
     const tables = new Set(rows.map((row) => row.tableName));
-    for (const table of ['users', 'sessions', 'email_verification_tokens', 'admin_accounts', 'blood_groups', 'donor_profiles', '_prisma_migrations']) {
+    for (const table of ['users', 'sessions', 'email_verification_tokens', 'admin_accounts', 'blood_groups', 'donor_profiles', 'blood_requests', '_prisma_migrations']) {
       assert.ok(tables.has(table), `Expected table ${table} to exist`);
     }
     console.info(`[database check] tables: ${[...tables].sort().join(', ')}`);
 
-    const migrations = await prisma.$queryRaw`SELECT migration_name AS migrationName, finished_at AS finishedAt, rolled_back_at AS rolledBackAt FROM _prisma_migrations WHERE migration_name IN ('20261103000000_initial', '20261103020000_donor_profiles') AND finished_at IS NOT NULL AND rolled_back_at IS NULL`;
-    assert.equal(migrations.length, 2);
+    const migrations = await prisma.$queryRaw`SELECT migration_name AS migrationName, finished_at AS finishedAt, rolled_back_at AS rolledBackAt FROM _prisma_migrations WHERE migration_name IN ('20261103000000_initial', '20261103020000_donor_profiles', '20261103030000_blood_requests') AND finished_at IS NOT NULL AND rolled_back_at IS NULL`;
+    assert.equal(migrations.length, 3);
     const unresolvedFailures = await prisma.$queryRaw`SELECT COUNT(*) AS count FROM _prisma_migrations WHERE finished_at IS NULL AND rolled_back_at IS NULL`;
     assert.equal(Number(unresolvedFailures[0].count), 0);
   } finally {
@@ -28,7 +29,7 @@ test('configured MySQL database is reachable and all migrations are applied', as
   }
 });
 
-test('blood groups are seeded and donor profile lifecycle writes work transactionally', async () => {
+test('blood groups, donor discovery filters, and request lifecycle work transactionally', async () => {
   const prisma = new PrismaClient();
   const codes = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
   try {
@@ -39,7 +40,7 @@ test('blood groups are seeded and donor profile lifecycle writes work transactio
 
     await assert.rejects(prisma.$transaction(async (tx) => {
       const user = await tx.user.create({ data: {
-        email: `donor-db-test-${crypto.randomUUID()}@example.invalid`,
+        email: `donor-db-test-${randomUUID()}@example.invalid`,
         fullName: 'Synthetic Donor Test', passwordHash: 'test-only-hash', status: 'ACTIVE', emailVerifiedAt: new Date(),
       } });
       let profile = await tx.donorProfile.create({ data: {
@@ -63,6 +64,38 @@ test('blood groups are seeded and donor profile lifecycle writes work transactio
       assert.ok(profile.discoveryConsentAt);
       profile = await tx.donorProfile.update({ where: { userId: user.id }, data: { discoveryConsentAt: null, consentUpdatedAt: new Date() } });
       assert.equal(profile.discoveryConsentAt, null);
+
+      const queryDonor = async ({ name, group = 'O+', division = 'North', district = 'Metro', area = 'East', availability = 'AVAILABLE', consent = true, userStatus = 'ACTIVE' }) => {
+        const donorUser = await tx.user.create({ data: { email: `discovery-${randomUUID()}@example.invalid`, fullName: name, passwordHash: 'test-only-hash', status: userStatus } });
+        return tx.donorProfile.create({ data: {
+          userId: donorUser.id, displayName: name, bloodGroupId: byCode.get(group), division, district, area,
+          availabilityStatus: availability, discoveryConsentAt: consent ? new Date() : null,
+          consentVersion: consent ? 'donor-discovery-v1' : null,
+        } });
+      };
+      await queryDonor({ name: 'Eligible Exact Area' });
+      await queryDonor({ name: 'Eligible Neighbor Area', area: 'West' });
+      await queryDonor({ name: 'Eligible Neighbor District', district: 'Harbor' });
+      await queryDonor({ name: 'No Consent', consent: false });
+      await queryDonor({ name: 'Paused', availability: 'PAUSED' });
+      await queryDonor({ name: 'Inactive', userStatus: 'SUSPENDED' });
+      await queryDonor({ name: 'Wrong Group', group: 'A+' });
+      const eligibleWhere = {
+        bloodGroupId: byCode.get('O+'), division: 'North', district: 'Metro', area: 'East',
+        availabilityStatus: 'AVAILABLE', discoveryConsentAt: { not: null },
+        user: { is: { status: 'ACTIVE', deletedAt: null } },
+      };
+      const exactCandidates = await tx.donorProfile.findMany({ where: eligibleWhere, include: { bloodGroup: true } });
+      assert.deepEqual(exactCandidates.map((candidate) => candidate.displayName), ['Eligible Exact Area']);
+      const districtCandidates = await tx.donorProfile.findMany({ where: { ...eligibleWhere, area: undefined }, include: { bloodGroup: true } });
+      assert.deepEqual(new Set(districtCandidates.map((candidate) => candidate.displayName)), new Set(['Eligible Exact Area', 'Eligible Neighbor Area']));
+
+      const bloodRequest = await tx.bloodRequest.create({ data: {
+        requesterUserId: user.id, bloodGroupId: byCode.get('O+'), unitsRequested: 2,
+        division: 'North', district: 'Metro', area: 'East', urgency: 'URGENT', neededAt: new Date(),
+      } });
+      const paused = await tx.bloodRequest.updateMany({ where: { id: bloodRequest.id, requesterUserId: user.id, status: 'OPEN' }, data: { status: 'PAUSED' } });
+      assert.equal(paused.count, 1);
       throw rollback;
     }), (error) => error === rollback);
   } finally {

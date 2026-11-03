@@ -20,6 +20,18 @@ enum DonorAvailabilityStatus {
   PAUSED
 }
 
+enum BloodRequestUrgency {
+  URGENT
+  SCHEDULED
+}
+
+enum BloodRequestStatus {
+  OPEN
+  PAUSED
+  CANCELLED
+  CLOSED
+}
+
 model User {
   id               String                  @id @default(uuid()) @db.Char(36)
   email            String                  @unique @db.VarChar(254)
@@ -35,6 +47,7 @@ model User {
   adminAccount     AdminAccount?
   grantedAdmins   AdminAccount[]          @relation("AdminGrantor")
   donorProfile     DonorProfile?
+  bloodRequests    BloodRequest[]
 
   @@index([status, createdAt])
   @@map("users")
@@ -45,6 +58,7 @@ model BloodGroup {
   code          String         @unique @db.VarChar(3)
   displayName   String         @map("display_name") @db.VarChar(30)
   donorProfiles DonorProfile[]
+  bloodRequests BloodRequest[]
 
   @@map("blood_groups")
 }
@@ -69,6 +83,31 @@ model DonorProfile {
   @@index([bloodGroupId, availabilityStatus, discoveryConsentAt], map: "donor_profiles_blood_group_avail_consent_idx")
   @@index([division, district, area])
   @@map("donor_profiles")
+}
+
+model BloodRequest {
+  id               String              @id @default(uuid()) @db.Char(36)
+  requesterUserId  String              @map("requester_user_id") @db.Char(36)
+  bloodGroupId     Int                 @map("blood_group_id") @db.UnsignedSmallInt
+  unitsRequested   Int                 @map("units_requested") @db.UnsignedSmallInt
+  division         String              @db.VarChar(80)
+  district         String              @db.VarChar(80)
+  area             String              @db.VarChar(100)
+  urgency          BloodRequestUrgency
+  neededAt         DateTime            @map("needed_at") @db.DateTime(3)
+  facilityName     String?             @map("facility_name") @db.VarChar(180)
+  publicNote       String?             @map("public_note") @db.VarChar(500)
+  status           BloodRequestStatus  @default(OPEN)
+  closedAt         DateTime?           @map("closed_at") @db.DateTime(3)
+  createdAt        DateTime            @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt        DateTime            @updatedAt @map("updated_at") @db.DateTime(3)
+  requester        User                @relation(fields: [requesterUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  bloodGroup       BloodGroup          @relation(fields: [bloodGroupId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([requesterUserId, createdAt])
+  @@index([status, neededAt, createdAt])
+  @@index([bloodGroupId, division, district, area, status])
+  @@map("blood_requests")
 }
 
 model Session {
