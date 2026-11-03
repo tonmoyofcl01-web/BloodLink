@@ -86,7 +86,7 @@ export default function OrganizationWorkspace({ focusOrganizationId }) {
   </section>;
 }
 
-export function OrganizationAdminWorkspace({ focusOrganizationId }) {
+export function OrganizationAdminWorkspace({ focusOrganizationId, onBackToNotifications }) {
   const [status, setStatus] = useState('PENDING');
   const [organizations, setOrganizations] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -105,9 +105,19 @@ export function OrganizationAdminWorkspace({ focusOrganizationId }) {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error?.message || 'Could not load applications.');
       setOrganizations(data.organizations);
-      const next = data.organizations.find((item) => item.id === (focusOrganizationId || selected?.id)) || data.organizations[0] || null;
-      if (next) await inspect(next.id); else setSelected(null);
-    } catch (reasonValue) { setError(reasonValue.message); }
+      if (focusOrganizationId) {
+        setSelected(null);
+        await inspect(focusOrganizationId);
+      } else {
+        const next = data.organizations.find((item) => item.id === selected?.id) || data.organizations[0] || null;
+        if (next) await inspect(next.id); else setSelected(null);
+      }
+    } catch (reasonValue) {
+      setSelected(null);
+      setError(focusOrganizationId
+        ? 'This organization application is no longer available. It may have been removed. Return to notifications to open another item.'
+        : reasonValue.message);
+    }
     finally { setLoading(false); }
   }
   async function inspect(id) {
@@ -146,7 +156,7 @@ export function OrganizationAdminWorkspace({ focusOrganizationId }) {
     finally { setSaving(false); }
   }
 
-  return <section className="space-y-5"><header><p className="text-sm font-semibold uppercase tracking-[0.18em] text-teal-700 dark:text-teal-300">Administrator</p><h2 className="mt-2 text-2xl font-bold">Organization verification</h2><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Review submitted organization details and record every decision.</p></header>
+  return <section className="space-y-5"><header className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-sm font-semibold uppercase tracking-[0.18em] text-teal-700 dark:text-teal-300">Administrator</p><h2 className="mt-2 text-2xl font-bold">Organization verification</h2><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Review submitted organization details and record every decision.</p></div>{focusOrganizationId && <button onClick={onBackToNotifications} className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold dark:border-slate-700">Back to notifications</button>}</header>
     {message && <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100">{message}</p>}{error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800 dark:bg-rose-950 dark:text-rose-200">{error}</p>}
     <label className="text-sm font-semibold">Application status<select value={status} onChange={(event) => setStatus(event.target.value)} className={`${inputClass} max-w-xs`}><option>PENDING</option><option>VERIFIED</option><option>REJECTED</option><option>SUSPENDED</option></select></label>
     {loading ? <p className="rounded-2xl bg-white p-6 text-slate-500 shadow-sm dark:bg-slate-900">Loading applications…</p> : organizations.length === 0 ? <p className="rounded-2xl bg-white p-8 text-center text-slate-500 shadow-sm dark:bg-slate-900">No {status.toLowerCase()} organizations.</p> : <div className="grid gap-5 lg:grid-cols-[0.8fr_1.2fr]"><ul className="space-y-2">{organizations.map((organization) => <li key={organization.id}><button onClick={() => inspect(organization.id).catch((reasonValue) => setError(reasonValue.message))} className={`w-full rounded-xl border p-4 text-left ${selected?.id === organization.id ? 'border-teal-500 bg-teal-50 dark:bg-teal-950/30' : 'border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900'}`}><span className="flex justify-between gap-2 font-semibold">{organization.name}<VerificationBadge status={organization.status} /></span><span className="mt-1 block text-xs text-slate-500">{organization.type.replace('_', ' ')} · {organization.district}</span></button></li>)}</ul>

@@ -75,8 +75,9 @@ export function createNotificationRouter({ prisma, requireAuth }) {
       if (referenceType === 'ORGANIZATION') {
         const organization = await prisma.organization.findUnique({ where: { id: referenceId }, select: { id: true } });
         const member = await prisma.organizationMembership.findFirst({ where: { organizationId: referenceId, userId: req.auth.userId, status: 'ACTIVE' }, select: { id: true } });
-        if (!organization || (!member && !req.auth.isAdmin)) return res.status(404).json({ error: { code: 'REFERENCE_NOT_FOUND', message: 'Referenced item is unavailable.' } });
-        return res.json({ destination: { view: req.auth.isAdmin ? 'admin-organizations' : 'organization', id: referenceId } });
+        if (req.auth.isAdmin) return res.json({ destination: { view: 'admin-organizations', id: referenceId } });
+        if (!organization || !member) return res.status(404).json({ error: { code: 'ORGANIZATION_REFERENCE_NOT_FOUND', message: 'This organization application is unavailable to your account. Return to notifications to open another item.' } });
+        return res.json({ destination: { view: 'organization', id: referenceId } });
       }
       res.json({ destination: { view: 'notifications' } });
     } catch (error) { next(error); }

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../../app.js';
 import { createNotifications, notifyRequestStatus } from './service.js';
+import { hashSecret } from '../../lib/crypto.js';
 
 async function withServer(app, callback) {
   const server = app.listen(0);
@@ -52,8 +53,14 @@ test('notifications are private to their owner, paginated, readable, and contain
     const read = await fetch(`${base}/api/v1/notifications/${id1}/read`, { method: 'PATCH', headers });
     assert.equal(read.status, 200);
     assert.ok(prisma.notifications[0].readAt);
+    const repeatedRead = await fetch(`${base}/api/v1/notifications/${id1}/read`, { method: 'PATCH', headers });
+    assert.equal(repeatedRead.status, 200);
+    const afterRead = await fetch(`${base}/api/v1/notifications`, { headers });
+    assert.equal((await afterRead.json()).unreadCount, 1);
     const markAll = await fetch(`${base}/api/v1/notifications/read-all`, { method: 'PATCH', headers });
     assert.deepEqual(await markAll.json(), { updated: 1 });
+    const afterMarkAll = await fetch(`${base}/api/v1/notifications`, { headers });
+    assert.equal((await afterMarkAll.json()).unreadCount, 0);
   });
 });
 
@@ -65,6 +72,44 @@ test('opening a notification rechecks referenced opportunity ownership', async (
     prisma.requestMatch.findFirst = async () => null;
     const unauthorized = await fetch(`${base}/api/v1/notifications/${id1}/open`, { method: 'POST', headers: { cookie: 'bloodlink_session=one' } });
     assert.equal(unauthorized.status, 404);
+  });
+});
+
+test('admin organization notifications navigate to their exact application even if it was deleted', async () => {
+  const prisma = notificationPrisma();
+  const organizationId = '44444444-4444-4444-8444-444444444444';
+  const notificationId = '55555555-5555-4555-8555-555555555555';
+  prisma.notifications.push({
+    id: notificationId, userId: 'admin-user', eventKey: `organization:${organizationId}:submitted:admin-user`,
+    type: 'ORGANIZATION_SUBMITTED', title: 'Organization verification requested',
+    message: 'A new organization application is ready for review.', referenceType: 'ORGANIZATION',
+    referenceId: organizationId, readAt: null, createdAt: new Date(),
+  });
+  prisma.session.findUnique = async ({ where }) => {
+    const isAdmin = where.secretHash === hashSecret('admin');
+    return { userId: isAdmin ? 'admin-user' : 'user-one', revokedAt: null, expiresAt: new Date(Date.now() + 60_000), user: { status: 'ACTIVE', deletedAt: null, adminAccount: isAdmin ? { revokedAt: null } : null } };
+  };
+  prisma.organization = { findUnique: async () => null };
+  prisma.organizationMembership = { findFirst: async () => null };
+
+  await withServer(createApp({ prisma, env }), async (base) => {
+    const nonAdmin = await fetch(`${base}/api/v1/notifications/${notificationId}/open`, { method: 'POST', headers: { cookie: 'bloodlink_session=one' } });
+    assert.equal(nonAdmin.status, 404);
+    prisma.organization.findUnique = async ({ where }) => where.id === organizationId ? { id: organizationId } : null;
+    const existingResponse = await fetch(`${base}/api/v1/notifications/${notificationId}/open`, { method: 'POST', headers: { cookie: 'bloodlink_session=admin' } });
+    assert.equal(existingResponse.status, 200);
+    assert.deepEqual(await existingResponse.json(), { destination: { view: 'admin-organizations', id: organizationId } });
+    prisma.organization.findUnique = async () => null;
+    const deletedResponse = await fetch(`${base}/api/v1/notifications/${notificationId}/open`, { method: 'POST', headers: { cookie: 'bloodlink_session=admin' } });
+    assert.equal(deletedResponse.status, 200);
+    assert.deepEqual(await deletedResponse.json(), { destination: { view: 'admin-organizations', id: organizationId } });
+    const read = await fetch(`${base}/api/v1/notifications/${notificationId}/read`, { method: 'PATCH', headers: { cookie: 'bloodlink_session=admin' } });
+    assert.equal(read.status, 200);
+    const list = await fetch(`${base}/api/v1/notifications`, { headers: { cookie: 'bloodlink_session=admin' } });
+    const data = await list.json();
+    assert.equal(data.unreadCount, 0);
+    assert.equal(data.notifications[0].referenceId, organizationId);
+    assert.equal(data.notifications[0].readAt == null, false);
   });
 });
 

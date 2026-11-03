@@ -81,6 +81,9 @@ test('organization registration creates only pending applications and an owner m
     assert.equal(prisma.memberships[0].userId, 'member-user');
     assert.equal(prisma.events[0].action, 'SUBMITTED');
     assert.equal(prisma.notifications[0].type, 'ORGANIZATION_SUBMITTED');
+    assert.equal(prisma.notifications[0].referenceType, 'ORGANIZATION');
+    assert.equal(prisma.notifications[0].referenceId, result.organization.id);
+    assert.equal(prisma.notifications[0].eventKey, `organization:${result.organization.id}:submitted:admin-user`);
     const duplicate = await fetch(`${base}/api/v1/organizations`, { method: 'POST', headers, body: JSON.stringify(input) });
     assert.equal(duplicate.status, 409);
     const pendingRequest = await fetch(`${base}/api/v1/organizations/mine/${organizationId}/requests`, { method: 'POST', headers, body: JSON.stringify({ bloodGroup: 'O+', unitsRequested: 1, division: 'North', district: 'Metro', area: 'Central', urgency: 'URGENT', neededAt: '2027-01-01T00:00:00.000Z' }) });
@@ -121,6 +124,9 @@ test('only the bootstrapped admin can approve, reject, suspend, and inspect appe
     assert.equal(response.status, 403);
     response = await fetch(`${base}/api/v1/admin/organizations/${organizationId}`, { headers: { cookie: 'bloodlink_session=admin' } });
     assert.equal((await response.json()).organization.verificationHistory.length, 2);
+    response = await fetch(`${base}/api/v1/admin/organizations/33333333-3333-4333-8333-333333333333`, { headers: { cookie: 'bloodlink_session=admin' } });
+    assert.equal(response.status, 404);
+    assert.match((await response.json()).error.message, /Organization not found/);
     assert.equal(prisma.events.length, 3);
   });
 });

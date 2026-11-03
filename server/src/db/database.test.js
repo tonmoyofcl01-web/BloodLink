@@ -449,6 +449,10 @@ test('MySQL-backed HTTP workflow covers account verification through organizatio
         const donors = await tx.donorProfile.findMany({ where: { userId: { in: userIds } }, select: { id: true } });
         const donorIds = donors.map((item) => item.id);
         await tx.notification.deleteMany({ where: { userId: { in: userIds } } });
+        // Organization submission notifications belong to the administrator, not the
+        // synthetic applicant. Remove only notifications whose reference is one of
+        // these test-created organizations before cleaning those organizations up.
+        if (organizationIds.length) await tx.notification.deleteMany({ where: { referenceType: 'ORGANIZATION', referenceId: { in: organizationIds } } });
         if (organizationIds.length) {
           await tx.organizationVerificationEvent.deleteMany({ where: { organizationId: { in: organizationIds } } });
           await tx.organizationMembership.deleteMany({ where: { organizationId: { in: organizationIds } } });
