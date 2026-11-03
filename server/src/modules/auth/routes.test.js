@@ -20,7 +20,7 @@ test('registration validates public input and creates no privileged fields', asy
   const created = [];
   const tokens = [];
   const prisma = {
-    user: { create: async ({ data }) => { created.push(data); return { id: 'user-id', email: data.email }; } },
+    user: { findUnique: async () => null, create: async ({ data }) => { created.push(data); return { id: 'user-id', email: data.email }; } },
     emailVerificationToken: { create: async ({ data }) => tokens.push(data) },
     $transaction: async (operation) => operation(prisma),
   };
@@ -45,7 +45,7 @@ test('registration validates public input and creates no privileged fields', asy
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ email: 'Person@Example.com', password: 'long-enough-password', fullName: 'Person' }),
       });
-      assert.equal(response.status, 202);
+      assert.equal(response.status, 201);
       assert.equal(created[0].email, 'person@example.com');
       assert.equal('role' in created[0], false);
       assert.equal('adminAccount' in created[0], false);
@@ -79,6 +79,57 @@ test('registration and resend fail safely when SMTP is not configured without ch
     assert.equal((await resend.json()).error.code, 'EMAIL_DELIVERY_UNAVAILABLE');
     assert.equal(creates, 0);
     assert.equal(lookups, 0);
+  });
+});
+
+test('duplicate registration clearly distinguishes verified and pending accounts', async () => {
+  let status = 'PENDING_VERIFICATION';
+  let verifiedAt = null;
+  let creates = 0;
+  const prisma = {
+    user: {
+      findUnique: async () => ({ id: 'existing-user', status, emailVerifiedAt: verifiedAt, deletedAt: null }),
+      create: async () => { creates += 1; },
+    },
+  };
+  await withServer(createApp({ prisma, env, emailAdapter: async () => {} }), async (base) => {
+    const register = () => fetch(`${base}/api/v1/auth/register`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'person@example.com', fullName: 'Person', password: 'long-enough-password' }),
+    });
+    let response = await register();
+    let result = await response.json();
+    assert.equal(response.status, 409);
+    assert.match(result.error.message, /not verified.*Resend/i);
+    assert.equal(result.error.accountState, 'PENDING_VERIFICATION');
+    status = 'ACTIVE';
+    verifiedAt = new Date();
+    response = await register();
+    result = await response.json();
+    assert.equal(response.status, 409);
+    assert.match(result.error.message, /already exists and is verified. Sign in/i);
+    assert.equal(result.error.accountState, 'VERIFIED');
+    assert.equal(creates, 0);
+  });
+});
+
+test('SMTP send failure is returned as a clear service error without revealing the raw adapter error', async () => {
+  const prisma = {
+    user: { findUnique: async () => null, create: async ({ data }) => ({ id: 'new-user', email: data.email }) },
+    emailVerificationToken: { create: async () => {} },
+    $transaction: async (operation) => operation(prisma),
+  };
+  const emailAdapter = async () => { throw new Error('private smtp transport details'); };
+  emailAdapter.isConfigured = true;
+  await withServer(createApp({ prisma, env, emailAdapter }), async (base) => {
+    const response = await fetch(`${base}/api/v1/auth/register`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'person@example.com', fullName: 'Person', password: 'long-enough-password' }),
+    });
+    const result = await response.json();
+    assert.equal(response.status, 503);
+    assert.equal(result.error.code, 'EMAIL_DELIVERY_FAILED');
+    assert.doesNotMatch(JSON.stringify(result), /private smtp transport details/);
   });
 });
 

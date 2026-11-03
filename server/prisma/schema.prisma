@@ -98,6 +98,7 @@ model User {
   deletedAt        DateTime?               @map("deleted_at") @db.DateTime(3)
   sessions         Session[]
   emailTokens      EmailVerificationToken[]
+  passwordResetTokens PasswordResetToken[]
   adminAccount     AdminAccount?
   grantedAdmins   AdminAccount[]          @relation("AdminGrantor")
   donorProfile     DonorProfile?
@@ -295,6 +296,19 @@ model EmailVerificationToken {
 
   @@index([userId, expiresAt])
   @@map("email_verification_tokens")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Char(36)
+  userId    String    @map("user_id") @db.Char(36)
+  tokenHash String    @unique @map("token_hash") @db.Char(64)
+  expiresAt DateTime  @map("expires_at") @db.DateTime(3)
+  usedAt    DateTime? @map("used_at") @db.DateTime(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([userId, expiresAt])
+  @@map("password_reset_tokens")
 }
 
 model AdminAccount {

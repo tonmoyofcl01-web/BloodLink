@@ -8,7 +8,7 @@
     "dev:client": "npm --workspace client run dev",
     "dev:server": "npm --workspace server run dev",
     "build": "npm --workspace client run build",
-    "test": "node --test client/src/auth/verification-once.test.js && npm --workspace server test",
+    "test": "node --test client/src/auth/verification-once.test.js client/src/auth/submission-lock.test.js client/src/auth/resend-state.test.js && npm --workspace server test",
     "test:db": "npm --workspace server run test:db",
     "db:generate": "npm --workspace server run db:generate",
     "db:migrate": "npm --workspace server run db:migrate",

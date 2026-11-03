@@ -4,7 +4,7 @@ import { RedisStore } from 'rate-limit-redis';
 import rateLimit from 'express-rate-limit';
 
 export const rateLimitStoreNames = [
-  'auth', 'authRegister', 'authLogin', 'authVerify', 'authResend', 'donorDiscovery', 'requestCreate',
+  'auth', 'authRegister', 'authLogin', 'authVerify', 'authResend', 'authPasswordResetRequest', 'authPasswordResetConsume', 'donorDiscovery', 'requestCreate',
 ];
 
 export function getRateLimitClientIp(req, env) {
@@ -65,15 +65,20 @@ export async function createRateLimitInfrastructure(env) {
   };
 }
 
-export function createRateLimitMiddleware({ limit, windowMs, store, env, message }) {
+export function createRateLimitMiddleware({ limit, windowMs, store, env, message, skipSuccessfulRequests = false }) {
   const options = {
     windowMs,
     limit,
     standardHeaders: true,
     legacyHeaders: false,
     passOnStoreError: false,
+    skipSuccessfulRequests,
     keyGenerator: (req) => getRateLimitClientIp(req, env),
-    handler: (_req, res) => res.status(429).json({ error: { code: 'RATE_LIMITED', message } }),
+    handler: (req, res) => {
+      const retryAfterSeconds = Math.max(1, Math.ceil(((req.rateLimit?.resetTime?.getTime() || Date.now() + windowMs) - Date.now()) / 1000));
+      res.set('Retry-After', String(retryAfterSeconds));
+      return res.status(429).json({ error: { code: 'RATE_LIMITED', message, retryAfterSeconds } });
+    },
   };
   if (store) options.store = store;
   return rateLimit(options);

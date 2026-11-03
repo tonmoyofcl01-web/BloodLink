@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { runVerificationOnce } from './auth/verification-once.js';
+import { runSubmissionOnce } from './auth/submission-lock.js';
+import { canShowResendVerification, verificationUiState } from './auth/resend-state.js';
 import RequestWorkspace from './features/requests/RequestWorkspace.jsx';
 import DonorDiscovery from './features/discovery/DonorDiscovery.jsx';
 import MyOpportunities from './features/donors/MyOpportunities.jsx';
@@ -10,13 +12,27 @@ const API = import.meta.env.VITE_API_URL || '/api/v1';
 const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 const EMPTY_PROFILE = { displayName: '', bloodGroup: 'O+', division: '', district: '', area: '' };
 
+function apiErrorMessage(response, data, fallback) {
+  const message = data.error?.message || fallback;
+  const retryAfter = Number(data.error?.retryAfterSeconds || response.headers.get('retry-after'));
+  return response.status === 429 && retryAfter > 0 ? `${message} Retry in about ${retryAfter} seconds.` : message;
+}
+
+function initialAuthMode() {
+  if (window.location.pathname === '/reset-password') return 'reset-password';
+  if (window.location.pathname === '/forgot-password') return 'forgot-password';
+  return 'login';
+}
+
 export default function App() {
-  const [mode, setMode] = useState('login');
+  const [mode, setMode] = useState(initialAuthMode);
   const [user, setUser] = useState(null);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [verificationEmail, setVerificationEmail] = useState('');
+  const [authEmail, setAuthEmail] = useState('');
   const [resendBusy, setResendBusy] = useState(false);
+  const [resetToken, setResetToken] = useState(() => new URLSearchParams(window.location.search).get('token') || '');
   const [dark, setDark] = useState(() => window.localStorage.getItem('bloodlink-theme') === 'dark');
   const verificationSubmitted = useRef(false);
   const authSubmitInFlight = useRef(false);
@@ -51,39 +67,63 @@ export default function App() {
 
   async function submit(event) {
     event.preventDefault();
-    if (authSubmitInFlight.current) return;
-    authSubmitInFlight.current = true;
-    setMessage('');
-    setBusy(true);
-    const body = Object.fromEntries(new FormData(event.currentTarget).entries());
-    if (mode === 'register') setVerificationEmail(body.email);
-    try {
-      const response = await fetch(`${API}/auth/${mode === 'register' ? 'register' : 'login'}`, {
-        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        if (mode === 'login' && data.error?.code === 'EMAIL_NOT_VERIFIED') setVerificationEmail(body.email);
-        throw new Error(data.error?.message || 'Unable to complete request.');
+    await runSubmissionOnce(authSubmitInFlight, async () => {
+      setMessage('');
+      setBusy(true);
+      const body = Object.fromEntries(new FormData(event.currentTarget).entries());
+      if (body.email) {
+        setAuthEmail(body.email);
+        if (mode === 'register' || mode === 'login') setVerificationEmail('');
       }
-      if (data.user) setUser(data.user);
-      setMessage(mode === 'register' ? data.message : 'Signed in successfully.');
-    } catch (error) { setMessage(error.message); }
-    finally { authSubmitInFlight.current = false; setBusy(false); }
+      try {
+        if (mode === 'reset-password' && body.password !== body.confirmPassword) throw new Error('The passwords do not match.');
+        const endpoint = mode === 'register' ? 'register'
+          : mode === 'forgot-password' ? 'password-reset/request'
+            : mode === 'reset-password' ? 'password-reset/consume' : 'login';
+        const payload = mode === 'reset-password'
+          ? { token: resetToken, password: body.password }
+          : mode === 'forgot-password' ? { email: body.email } : body;
+        const response = await fetch(`${API}/auth/${endpoint}`, {
+          method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          const verificationState = verificationUiState({ mode, ok: false, error: data.error, email: body.email });
+          setVerificationEmail(verificationState.resendEmail);
+          if (verificationState.verified) setMode('login');
+          throw new Error(apiErrorMessage(response, data, 'Unable to complete request.'));
+        }
+        const verificationState = verificationUiState({ mode, ok: true, email: body.email });
+        setVerificationEmail(verificationState.resendEmail);
+        if (mode === 'login' && data.user) setUser(data.user);
+        if (mode === 'reset-password') {
+          setResetToken('');
+          setMode('login');
+          window.history.replaceState({}, '', '/');
+        }
+        setMessage(mode === 'login' ? 'Signed in successfully.' : data.message);
+      } catch (error) { setMessage(error.message); }
+      finally { setBusy(false); }
+    });
   }
 
   async function resendVerification() {
-    if (resendInFlight.current) return;
-    resendInFlight.current = true;
-    setResendBusy(true);
-    setMessage('');
-    try {
-      const response = await fetch(`${API}/auth/resend-verification`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: verificationEmail }) });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error?.message || 'Could not resend verification instructions.');
-      setMessage(data.message);
-    } catch (error) { setMessage(error.message); }
-    finally { resendInFlight.current = false; setResendBusy(false); }
+    await runSubmissionOnce(resendInFlight, async () => {
+      setResendBusy(true);
+      setMessage('');
+      const resendEmail = verificationEmail || authEmail;
+      try {
+        const response = await fetch(`${API}/auth/resend-verification`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: resendEmail }) });
+        const data = await response.json();
+        if (!response.ok) {
+          if (['ALREADY_VERIFIED', 'ACCOUNT_NOT_FOUND', 'ACCOUNT_UNAVAILABLE'].includes(data.error?.code)) setVerificationEmail('');
+          if (data.error?.code === 'ALREADY_VERIFIED') setMode('login');
+          throw new Error(apiErrorMessage(response, data, 'Could not resend verification instructions.'));
+        }
+        setMessage(data.message);
+      } catch (error) { setMessage(error.message); }
+      finally { setResendBusy(false); }
+    });
   }
 
   async function logout() {
@@ -104,19 +144,24 @@ export default function App() {
             <p className="mt-5 max-w-sm text-rose-100">A secure network for people working to connect blood donors with those who need help.</p>
           </div>
           <div className="p-8 md:p-14">
-            <h2 className="text-3xl font-bold">{mode === 'register' ? 'Create your account' : 'Welcome back'}</h2>
-            <p className="mt-2 text-slate-600 dark:text-slate-300">{mode === 'register' ? 'Start with a secure individual account.' : 'Sign in to continue to BloodLink.'}</p>
+            <h2 className="text-3xl font-bold">{mode === 'register' ? 'Create your account' : mode === 'forgot-password' ? 'Forgot password?' : mode === 'reset-password' ? 'Choose a new password' : 'Welcome back'}</h2>
+            <p className="mt-2 text-slate-600 dark:text-slate-300">{mode === 'register' ? 'Start with a secure individual account.' : mode === 'forgot-password' ? 'Enter your account email and we will send a reset link if an eligible account exists.' : mode === 'reset-password' ? 'Reset links expire after 30 minutes and can only be used once.' : 'Sign in to continue to BloodLink.'}</p>
             <form onSubmit={submit} className="mt-8 space-y-4">
               {mode === 'register' && <Field name="fullName" label="Full name" autoComplete="name" required />}
-              <Field name="email" label="Email address" type="email" autoComplete="email" required />
-              <Field name="password" label="Password" type="password" autoComplete={mode === 'register' ? 'new-password' : 'current-password'} minLength={12} required />
+              {mode !== 'reset-password' && <Field name="email" label="Email address" type="email" autoComplete="email" value={authEmail} onChange={(event) => { const email = event.target.value; setAuthEmail(email); if (email.trim().toLowerCase() !== verificationEmail.trim().toLowerCase()) setVerificationEmail(''); }} required />}
+              {(mode === 'login' || mode === 'register' || mode === 'reset-password') && <Field name="password" label={mode === 'reset-password' ? 'New password' : 'Password'} type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={mode === 'login' ? 1 : 12} required />}
+              {mode === 'reset-password' && <Field name="confirmPassword" label="Confirm new password" type="password" autoComplete="new-password" minLength={12} required />}
+              {mode === 'reset-password' && !resetToken && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-800 dark:bg-rose-950 dark:text-rose-200">This reset link is missing or invalid. Request a new password reset link.</p>}
               {message && <p role="status" className="rounded-lg bg-slate-100 p-3 text-sm text-slate-700 dark:bg-slate-800 dark:text-slate-200">{message}</p>}
-              <button disabled={busy} className="w-full rounded-xl bg-rose-700 px-5 py-3 font-semibold text-white hover:bg-rose-800 disabled:opacity-60">{busy ? 'Please wait…' : mode === 'register' ? 'Create account' : 'Sign in'}</button>
+              <button disabled={busy || (mode === 'reset-password' && !resetToken)} className="w-full rounded-xl bg-rose-700 px-5 py-3 font-semibold text-white hover:bg-rose-800 disabled:opacity-60">{busy ? 'Please wait…' : mode === 'register' ? 'Create account' : mode === 'forgot-password' ? 'Send reset link' : mode === 'reset-password' ? 'Update password' : 'Sign in'}</button>
             </form>
-            <button onClick={() => { setMode(mode === 'register' ? 'login' : 'register'); setVerificationEmail(''); setMessage(''); }} className="mt-5 text-sm font-medium text-rose-700 hover:underline dark:text-rose-300">
-              {mode === 'register' ? 'Already have an account? Sign in' : 'New to BloodLink? Create an account'}
-            </button>
-            {verificationEmail && <button type="button" onClick={resendVerification} disabled={resendBusy} className="ml-4 mt-5 text-sm font-medium text-teal-700 hover:underline disabled:opacity-50 dark:text-teal-300">{resendBusy ? 'Sending…' : 'Resend verification email'}</button>}
+            {mode === 'login' && <div className="mt-5 flex flex-wrap gap-x-5 gap-y-2 text-sm font-medium">
+              <button type="button" onClick={() => { setMode('register'); setVerificationEmail(''); setMessage(''); }} className="text-rose-700 hover:underline dark:text-rose-300">New to BloodLink? Create an account</button>
+              <button type="button" onClick={() => { setMode('forgot-password'); setMessage(''); }} className="text-teal-700 hover:underline dark:text-teal-300">Forgot password?</button>
+            </div>}
+            {mode === 'register' && <button type="button" onClick={() => { setMode('login'); setVerificationEmail(''); setMessage(''); }} className="mt-5 text-sm font-medium text-rose-700 hover:underline dark:text-rose-300">Already have an account? Sign in</button>}
+            {(mode === 'forgot-password' || mode === 'reset-password') && <button type="button" onClick={() => { setMode('login'); setMessage(''); window.history.replaceState({}, '', '/'); }} className="mt-5 text-sm font-medium text-rose-700 hover:underline dark:text-rose-300">Back to sign in</button>}
+            {canShowResendVerification(mode, authEmail, verificationEmail) && <button type="button" onClick={resendVerification} disabled={resendBusy} className="ml-4 mt-5 text-sm font-medium text-teal-700 hover:underline disabled:opacity-50 dark:text-teal-300">{resendBusy ? 'Sending…' : 'Resend verification email'}</button>}
           </div>
         </section>
       )}

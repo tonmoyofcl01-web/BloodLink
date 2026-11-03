@@ -39,6 +39,19 @@ test('development sends through SMTP when configured instead of printing a link'
   } finally { console.info = originalInfo; }
 });
 
+test('SMTP adapter sends a separate password-reset email with a clickable link', async () => {
+  let message;
+  const adapter = createEmailAdapter({
+    NODE_ENV: 'production', SMTP_HOST: 'smtp.example.org', SMTP_PORT: 587, SMTP_SECURE: 'false',
+    SMTP_USER: 'bloodlink@example.org', SMTP_PASSWORD: 'test-only-secret', EMAIL_FROM: 'noreply@example.org',
+  }, () => ({ sendMail: async (value) => { message = value; } }));
+  await adapter({ email: 'person@example.org', url: 'https://bloodlink.example/reset-password?token=synthetic-test-only', type: 'password-reset' });
+  assert.equal(message.to, 'person@example.org');
+  assert.match(message.subject, /Reset your BloodLink password/);
+  assert.match(message.text, /30 minutes/);
+  assert.match(message.html, /href="https:\/\/bloodlink\.example\/reset-password/);
+});
+
 test('partial local SMTP settings fail clearly instead of silently using the console adapter', () => {
   assert.throws(() => createEmailAdapter({ NODE_ENV: 'development', SMTP_HOST: 'smtp.example.org' }), /SMTP configuration is incomplete/);
 });

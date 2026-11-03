@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { RedisStore } from 'rate-limit-redis';
 import { createApp } from '../app.js';
+import bcrypt from 'bcryptjs';
 import { createRateLimitInfrastructure, createRedisRateLimitStores, getRateLimitClientIp, rateLimitStoreNames } from '../lib/rate-limit-store.js';
 
 function createSharedRedisMock() {
@@ -45,7 +46,7 @@ test('Redis counters are shared across independently initialized application ins
   const appB = makeTestApp(appBStores);
 
   await withServer(appA, async (baseA) => withServer(appB, async (baseB) => {
-    for (let index = 0; index < 15; index += 1) {
+    for (let index = 0; index < 45; index += 1) {
       assert.equal((await fetch(`${baseA}/api/v1/auth/unmatched`)).status, 404);
       assert.equal((await fetch(`${baseB}/api/v1/auth/unmatched`)).status, 404);
     }
@@ -60,7 +61,7 @@ test('untrusted forwarded-IP headers cannot bypass the limiter outside Vercel', 
   const app = makeTestApp(stores);
   assert.equal(app.get('trust proxy'), false);
   await withServer(app, async (base) => {
-    for (let index = 0; index < 30; index += 1) {
+    for (let index = 0; index < 90; index += 1) {
       const response = await fetch(`${base}/api/v1/auth/unmatched`, {
         headers: {
           'x-forwarded-for': `198.51.100.${index + 1}`,
@@ -113,7 +114,7 @@ test('registration, verification, and resend have independent stricter limits', 
   });
 });
 
-test('login has its own stricter limit while the auth-wide 30 request cap remains', async () => {
+test('login failures have their own limit and return retry information', async () => {
   const app = makeTestApp(createRedisRateLimitStores(createSharedRedisMock()));
   await withServer(app, async (base) => {
     for (let index = 0; index < 10; index += 1) {
@@ -123,6 +124,53 @@ test('login has its own stricter limit while the auth-wide 30 request cap remain
     const loginLimited = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
     assert.equal(loginLimited.status, 429);
     assert.equal((await loginLimited.json()).error.code, 'RATE_LIMITED');
+    assert.ok(Number(loginLimited.headers.get('retry-after')) > 0);
+  });
+});
+
+test('successful sign-ins do not consume the failed-login allowance', async () => {
+  const passwordHash = await bcrypt.hash('correct test password', 4);
+  const prisma = {
+    user: { findUnique: async () => ({ id: 'active-user', email: 'person@example.org', fullName: 'Person', passwordHash, status: 'ACTIVE', deletedAt: null, adminAccount: null }) },
+    session: { create: async () => {} },
+  };
+  const app = createApp({ prisma, env: { NODE_ENV: 'test', SESSION_COOKIE_NAME: 'session', SESSION_TTL_HOURS: 12 }, emailAdapter: async () => {} });
+  await withServer(app, async (base) => {
+    for (let index = 0; index < 12; index += 1) {
+      const response = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'person@example.org', password: 'correct test password' }) });
+      assert.equal(response.status, 200);
+    }
+    for (let index = 0; index < 10; index += 1) {
+      const response = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'person@example.org', password: 'incorrect password' }) });
+      assert.equal(response.status, 401);
+    }
+    const limited = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'person@example.org', password: 'incorrect password' }) });
+    assert.equal(limited.status, 429);
+  });
+});
+
+test('password-reset requests have their own email-abuse limit', async () => {
+  const app = makeTestApp(createRedisRateLimitStores(createSharedRedisMock()));
+  await withServer(app, async (base) => {
+    for (let index = 0; index < 5; index += 1) {
+      const response = await fetch(`${base}/api/v1/auth/password-reset/request`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+      assert.equal(response.status, 400);
+    }
+    const limited = await fetch(`${base}/api/v1/auth/password-reset/request`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(limited.status, 429);
+    assert.ok(Number(limited.headers.get('retry-after')) > 0);
+  });
+});
+
+test('local development offers higher limits for repeated auth testing', async () => {
+  const app = makeTestApp(undefined, { NODE_ENV: 'development' });
+  await withServer(app, async (base) => {
+    for (let index = 0; index < 60; index += 1) {
+      const response = await fetch(`${base}/api/v1/auth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+      assert.equal(response.status, 400);
+    }
+    const limited = await fetch(`${base}/api/v1/auth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(limited.status, 429);
   });
 });
 
@@ -132,6 +180,8 @@ test('Redis adapter uses a unique namespace for every rate-limit policy', () => 
   assert.ok(stores.auth instanceof RedisStore);
   assert.ok(stores.authRegister instanceof RedisStore);
   assert.notEqual(stores.auth.prefix, stores.authRegister.prefix);
+  assert.ok(stores.authPasswordResetRequest instanceof RedisStore);
+  assert.ok(stores.authPasswordResetConsume instanceof RedisStore);
 });
 
 test('production rate-limit infrastructure fails clearly when REDIS_URL is absent', async () => {

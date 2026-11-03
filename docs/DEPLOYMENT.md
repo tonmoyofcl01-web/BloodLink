@@ -10,7 +10,7 @@ Production variable checklist: `NODE_ENV=production`, deployment-assigned `PORT`
 
 Production must also have `REDIS_URL` set to a Redis-compatible TLS URL (`rediss://...`) in the deployment secret manager. The URL may contain credentials, so do not commit it, print it in logs, or paste it into support messages. The server validates the scheme, connects before listening, and exits with a configuration error if the variable is missing or Redis is unreachable. It does not fall back to memory in production. If Redis becomes unavailable after startup, rate-limited requests fail closed with server errors rather than bypassing the limit.
 
-Verification email requires authenticated SMTP:
+Verification and password-reset email require authenticated SMTP:
 
 - Port 587: `SMTP_SECURE=false`; the application requires STARTTLS.
 - Port 465: `SMTP_SECURE=true` for implicit TLS.
@@ -27,12 +27,14 @@ Bootstrap an administrator only through the one-time `npm run admin:bootstrap` c
 3. Set `CLIENT_ORIGIN` to `http://localhost:5173` locally or the exact deployed HTTPS origin in production. Restart the API after changing settings. Confirm `/api/v1/health/ready` returns `200` before testing.
 4. Register a new test account through BloodLink. Check the controlled mailbox's inbox and spam folder. Confirm the sender and subject, then open the verification link and confirm it uses the correct frontend origin.
 5. Confirm the app reports verification success, then sign in. Confirm authenticated state survives a page refresh and logout ends the session. Reusing the verification link should be rejected.
-6. Test “resend verification” with a pending test account. The newer link should work and the superseded link should fail. Also try an unknown address; the response should not reveal whether an account exists.
-7. Review provider delivery logs for delivery results. Do not log or share SMTP passwords, verification tokens, or full verification URLs. Remove only test accounts created for this smoke test if they are no longer needed.
+6. Test “resend verification” with a pending test account. The newer link should work and the superseded link should fail. Resend and password-reset request responses are generic for unknown addresses; password reset links expire after 30 minutes and are single-use.
+7. Test password reset end to end: request reset for the controlled verified account, open the email link, set a new password, sign in with it, and confirm existing sessions were revoked. Verify invalid, expired, and already-used links are rejected.
+8. Registration intentionally returns a specific duplicate-email response to make account recovery actionable. This permits email enumeration and is a product tradeoff. If production risk policy disallows enumeration, use a generic registration response before public launch.
+9. Review provider delivery logs for delivery results. Do not log or share SMTP passwords, verification tokens, or full verification URLs. Remove only test accounts created for this smoke test if they are no longer needed.
 
 ## Serverless rate limiting
 
-All current rate-limit policies use `express-rate-limit`; Redis-backed environments share counters through `rate-limit-redis`. Limits are: authentication-wide 30 requests per 15 minutes per client IP; registration 10/15 minutes; login 10/15 minutes; email verification 10/15 minutes; resend verification 5/15 minutes; donor discovery 30/10 minutes; and request creation 10/15 minutes. Endpoint counters have separate Redis key namespaces. Local development uses the built-in memory store unless `REDIS_URL` is explicitly set.
+All current rate-limit policies use `express-rate-limit`; Redis-backed environments share counters through `rate-limit-redis`. Limits are: authentication-wide 90 unsuccessful requests per 15 minutes per client IP (300 in development); registration 10/15 minutes (60 in development); login 10 failed attempts/15 minutes (successful logins do not consume the budget); email verification 10 failed attempts/15 minutes; resend verification 5/15 minutes; password-reset requests 5/15 minutes; password-reset attempts 10 failures/15 minutes; donor discovery 30/10 minutes; and request creation 10/15 minutes. Endpoint counters have separate Redis key namespaces. Local development uses the built-in memory store unless `REDIS_URL` is explicitly set.
 
 For optional local shared-store testing, start a local Redis instance bound only to your machine (for example `docker run --rm --name bloodlink-redis -p 127.0.0.1:6379:6379 redis:7-alpine`) and set `REDIS_URL=redis://127.0.0.1:6379` in `server/.env`. Remove the variable to return to the in-memory development store. Do not use this unauthenticated local URL in production.
 

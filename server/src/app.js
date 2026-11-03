@@ -33,10 +33,18 @@ export function createApp({ prisma, env, emailAdapter, rateLimitStores, rateLimi
     next();
   });
   const windowMs = 15 * 60 * 1000;
+  const localDevelopment = env.NODE_ENV === 'development';
   const getLimiter = (name, limit, message) => createRateLimitMiddleware({
     limit, windowMs, store: rateLimitStores?.[name], env, message,
   });
-  app.use('/api/v1/auth', getLimiter('auth', 30, 'Too many authentication requests. Try again later.'));
+  app.use('/api/v1/auth', createRateLimitMiddleware({
+    limit: localDevelopment ? 300 : 90,
+    windowMs,
+    store: rateLimitStores?.auth,
+    env,
+    message: 'Too many authentication requests. Please wait before trying again.',
+    skipSuccessfulRequests: true,
+  }));
   app.get('/api/v1/health', (_req, res) => res.json({ status: 'ok' }));
   app.get('/api/v1/health/ready', async (_req, res) => {
     try {
@@ -52,10 +60,12 @@ export function createApp({ prisma, env, emailAdapter, rateLimitStores, rateLimi
   app.use('/api/v1/auth', createAuthRouter({
     prisma, env, emailAdapter,
     rateLimiters: {
-      register: getLimiter('authRegister', 10, 'Too many registration attempts. Try again later.'),
-      login: getLimiter('authLogin', 10, 'Too many sign-in attempts. Try again later.'),
-      verify: getLimiter('authVerify', 10, 'Too many email verification attempts. Try again later.'),
-      resend: getLimiter('authResend', 5, 'Too many verification email requests. Try again later.'),
+      register: getLimiter('authRegister', localDevelopment ? 60 : 10, 'Too many registration attempts. Please wait before trying again.'),
+      login: createRateLimitMiddleware({ limit: localDevelopment ? 60 : 10, windowMs, store: rateLimitStores?.authLogin, env, message: 'Too many sign-in failures. Please wait before trying again.', skipSuccessfulRequests: true }),
+      verify: createRateLimitMiddleware({ limit: localDevelopment ? 60 : 10, windowMs, store: rateLimitStores?.authVerify, env, message: 'Too many verification attempts. Please wait before trying again.', skipSuccessfulRequests: true }),
+      resend: getLimiter('authResend', localDevelopment ? 30 : 5, 'Too many verification email requests. Please wait before trying again.'),
+      passwordResetRequest: getLimiter('authPasswordResetRequest', localDevelopment ? 30 : 5, 'Too many password-reset requests. Please wait before trying again.'),
+      passwordResetConsume: createRateLimitMiddleware({ limit: localDevelopment ? 60 : 10, windowMs, store: rateLimitStores?.authPasswordResetConsume, env, message: 'Too many password-reset attempts. Please wait before trying again.', skipSuccessfulRequests: true }),
     },
   }));
   app.use('/api/v1/donors', createDonorRouter({ prisma, requireAuth: auth.requireAuth, rateLimitStore: rateLimitStores?.donorDiscovery, env }));

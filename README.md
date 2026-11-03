@@ -38,4 +38,4 @@ Donor discovery requires explicit current consent. Public discovery and match su
 
 ## Release scope
 
-This release includes authentication and email verification, donor profiles and consent, emergency requests, discovery, matching and donor responses, notifications, organization registration and administrator verification, and a basic verified organization dashboard. Live chat, advanced analytics, automated SMS, and complex inventory management are deferred. Password reset is not implemented yet.
+This release includes authentication, email verification and password reset, donor profiles and consent, emergency requests, discovery, matching and donor responses, notifications, organization registration and administrator verification, and a basic verified organization dashboard. Live chat, advanced analytics, automated SMS, and complex inventory management are deferred. Registration deliberately returns a clear duplicate-email message; this reveals whether an address is registered. For a public service where email enumeration is a material risk, replace that response with the same generic confirmation used for verification resend and password reset.

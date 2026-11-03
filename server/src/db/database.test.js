@@ -20,13 +20,13 @@ test('configured MySQL database is reachable and all migrations are applied', as
 
     const rows = await prisma.$queryRaw`SELECT TABLE_NAME AS tableName FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'`;
     const tables = new Set(rows.map((row) => row.tableName));
-    for (const table of ['users', 'sessions', 'email_verification_tokens', 'admin_accounts', 'blood_groups', 'donor_profiles', 'blood_requests', 'request_matches', 'notifications', 'organizations', 'organization_memberships', 'organization_verification_events', '_prisma_migrations']) {
+    for (const table of ['users', 'sessions', 'email_verification_tokens', 'password_reset_tokens', 'admin_accounts', 'blood_groups', 'donor_profiles', 'blood_requests', 'request_matches', 'notifications', 'organizations', 'organization_memberships', 'organization_verification_events', '_prisma_migrations']) {
       assert.ok(tables.has(table), `Expected table ${table} to exist`);
     }
     console.info(`[database check] tables: ${[...tables].sort().join(', ')}`);
 
-    const migrations = await prisma.$queryRaw`SELECT migration_name AS migrationName, finished_at AS finishedAt, rolled_back_at AS rolledBackAt FROM _prisma_migrations WHERE migration_name IN ('20261103000000_initial', '20261103020000_donor_profiles', '20261103030000_blood_requests', '20261103040000_smart_matching', '20261103050000_notifications_organizations') AND finished_at IS NOT NULL AND rolled_back_at IS NULL`;
-    assert.equal(migrations.length, 5);
+    const migrations = await prisma.$queryRaw`SELECT migration_name AS migrationName, finished_at AS finishedAt, rolled_back_at AS rolledBackAt FROM _prisma_migrations WHERE migration_name IN ('20261103000000_initial', '20261103020000_donor_profiles', '20261103030000_blood_requests', '20261103040000_smart_matching', '20261103050000_notifications_organizations', '20261104000000_password_reset_tokens') AND finished_at IS NOT NULL AND rolled_back_at IS NULL`;
+    assert.equal(migrations.length, 6);
     const unresolvedFailures = await prisma.$queryRaw`SELECT COUNT(*) AS count FROM _prisma_migrations WHERE finished_at IS NULL AND rolled_back_at IS NULL`;
     assert.equal(Number(unresolvedFailures[0].count), 0);
   } finally {
@@ -151,12 +151,14 @@ test('MySQL registration, verification, resend, token expiry, auth, and rate lim
   const rateLimitEmail = `verification-limit-${runKey}@example.invalid`;
   const emails = new Set([email, rateLimitEmail]);
   const deliveries = new Map();
+  const resetDeliveries = new Map();
   const deliveryCounts = new Map();
   const app = createApp({
     prisma,
     env: { ...env, NODE_ENV: 'test', PORT: 0, CLIENT_ORIGIN: 'http://localhost:5173', SESSION_COOKIE_NAME: 'bloodlink_session', SESSION_COOKIE_SECURE: 'false' },
-    emailAdapter: async ({ email: recipient, url }) => {
-      deliveries.set(recipient, url);
+    emailAdapter: async ({ email: recipient, url, type }) => {
+      if (type === 'password-reset') resetDeliveries.set(recipient, url);
+      else deliveries.set(recipient, url);
       deliveryCounts.set(recipient, (deliveryCounts.get(recipient) || 0) + 1);
     },
   });
@@ -174,9 +176,10 @@ test('MySQL registration, verification, resend, token expiry, auth, and rate lim
     return { response, data: response.status === 204 ? null : await response.json() };
   };
   const extractToken = (recipient) => new URL(deliveries.get(recipient)).searchParams.get('token');
+  const extractResetToken = (recipient) => new URL(resetDeliveries.get(recipient)).searchParams.get('token');
   try {
     const registration = await send('register', { email, fullName: 'Synthetic Verification', password: 'test-only-password-2026' });
-    assert.equal(registration.response.status, 202);
+    assert.equal(registration.response.status, 201);
     const firstToken = extractToken(email);
     assert.ok(firstToken);
     const firstRecord = await prisma.emailVerificationToken.findUnique({ where: { tokenHash: hashSecret(firstToken) } });
@@ -193,10 +196,10 @@ test('MySQL registration, verification, resend, token expiry, auth, and rate lim
     assert.equal(wrongPassword.response.status, 401);
 
     const duplicate = await send('register', { email, fullName: 'Synthetic Verification', password: 'test-only-password-2026' });
-    assert.equal(duplicate.response.status, 202);
-    assert.equal(duplicate.data.message, registration.data.message);
+    assert.equal(duplicate.response.status, 409);
+    assert.equal(duplicate.data.error.code, 'EMAIL_ALREADY_REGISTERED');
     assert.equal(deliveryCounts.get(email), 1);
-    assert.match(duplicate.data.message, /If this address can be registered/);
+    assert.match(duplicate.data.error.message, /not verified.*Resend/i);
 
     const invalid = await send('verify-email', { token: `invalid-${randomUUID()}` });
     assert.equal(invalid.response.status, 400);
@@ -208,9 +211,9 @@ test('MySQL registration, verification, resend, token expiry, auth, and rate lim
     assert.equal(expired.data.error.code, 'TOKEN_EXPIRED');
 
     const resend = await send('resend-verification', { email });
-    assert.equal(resend.response.status, 202);
+    assert.equal(resend.response.status, 200);
     assert.equal(deliveryCounts.get(email), 2);
-    assert.match(resend.data.message, /If this address belongs to an unverified account/);
+    assert.match(resend.data.message, /Verification email sent/);
     const secondToken = extractToken(email);
     assert.ok(secondToken);
     assert.notEqual(secondToken, firstToken);
@@ -232,9 +235,10 @@ test('MySQL registration, verification, resend, token expiry, auth, and rate lim
     assert.equal(reused.data.error.code, 'TOKEN_ALREADY_USED');
 
     const alreadyVerified = await send('resend-verification', { email });
-    assert.equal(alreadyVerified.response.status, 202);
+    assert.equal(alreadyVerified.response.status, 409);
+    assert.equal(alreadyVerified.data.error.code, 'ALREADY_VERIFIED');
     assert.equal(deliveryCounts.get(email), 2);
-    assert.match(alreadyVerified.data.message, /If you already verified it, you can sign in/);
+    assert.match(alreadyVerified.data.error.message, /already verified. Sign in instead/);
     const login = await send('login', { email, password: 'test-only-password-2026' });
     assert.equal(login.response.status, 200);
     assert.ok(cookie);
@@ -246,10 +250,60 @@ test('MySQL registration, verification, resend, token expiry, auth, and rate lim
     const revokedSession = await fetch(`${base}/api/v1/auth/me`, { headers: { cookie } });
     assert.equal(revokedSession.status, 401);
 
-    assert.equal((await send('register', { email: rateLimitEmail, fullName: 'Synthetic Rate Limit', password: 'test-only-password-2026' })).response.status, 202);
+    const preResetLogin = await send('login', { email, password: 'test-only-password-2026' });
+    assert.equal(preResetLogin.response.status, 200);
+    const preResetSession = cookie;
+    const resetRequest = await send('password-reset/request', { email });
+    assert.equal(resetRequest.response.status, 202);
+    assert.match(resetRequest.data.message, /If an active account uses that email/);
+    const unknownReset = await send('password-reset/request', { email: `unknown-${runKey}@example.invalid` });
+    assert.equal(unknownReset.response.status, 202);
+    assert.equal(unknownReset.data.message, resetRequest.data.message);
+    const firstResetToken = extractResetToken(email);
+    assert.ok(firstResetToken);
+    const firstResetRecord = await prisma.passwordResetToken.findUnique({ where: { tokenHash: hashSecret(firstResetToken) } });
+    assert.ok(firstResetRecord);
+    assert.ok(firstResetRecord.expiresAt > new Date());
+    assert.ok(firstResetRecord.expiresAt.getTime() <= Date.now() + 30 * 60 * 1000);
+    const invalidReset = await send('password-reset/consume', { token: `invalid-${randomUUID()}`, password: 'updated-test-password-2026' });
+    assert.equal(invalidReset.response.status, 400);
+    assert.equal(invalidReset.data.error.code, 'INVALID_TOKEN');
+
+    await send('password-reset/request', { email });
+    const secondResetToken = extractResetToken(email);
+    assert.notEqual(secondResetToken, firstResetToken);
+    const supersededReset = await prisma.passwordResetToken.findUnique({ where: { tokenHash: hashSecret(firstResetToken) } });
+    assert.ok(supersededReset.usedAt);
+    const supersededResponse = await send('password-reset/consume', { token: firstResetToken, password: 'updated-test-password-2026' });
+    assert.equal(supersededResponse.data.error.code, 'TOKEN_ALREADY_USED');
+    await prisma.passwordResetToken.update({ where: { tokenHash: hashSecret(secondResetToken) }, data: { expiresAt: new Date(Date.now() - 1000) } });
+    const expiredReset = await send('password-reset/consume', { token: secondResetToken, password: 'updated-test-password-2026' });
+    assert.equal(expiredReset.data.error.code, 'TOKEN_EXPIRED');
+
+    await send('password-reset/request', { email });
+    const finalResetToken = extractResetToken(email);
+    const resetRecord = await prisma.passwordResetToken.findUnique({ where: { tokenHash: hashSecret(finalResetToken) } });
+    assert.ok(resetRecord && resetRecord.expiresAt > new Date());
+    const consumedReset = await send('password-reset/consume', { token: finalResetToken, password: 'updated-test-password-2026' });
+    assert.equal(consumedReset.response.status, 200);
+    assert.ok((await prisma.passwordResetToken.findUnique({ where: { id: resetRecord.id } })).usedAt);
+    assert.equal((await fetch(`${base}/api/v1/auth/me`, { headers: { cookie: preResetSession } })).status, 401);
+    const reusedReset = await send('password-reset/consume', { token: finalResetToken, password: 'another-test-password-2026' });
+    assert.equal(reusedReset.data.error.code, 'TOKEN_ALREADY_USED');
+    const oldPasswordLogin = await send('login', { email, password: 'test-only-password-2026' });
+    assert.equal(oldPasswordLogin.response.status, 401);
+    const newPasswordLogin = await send('login', { email, password: 'updated-test-password-2026' });
+    assert.equal(newPasswordLogin.response.status, 200);
+    const afterPasswordResetSession = cookie;
+    const newSessionCheck = await fetch(`${base}/api/v1/auth/me`, { headers: { cookie: afterPasswordResetSession } });
+    assert.equal(newSessionCheck.status, 200);
+    await send('logout', {});
+    assert.equal((await fetch(`${base}/api/v1/auth/me`, { headers: { cookie: afterPasswordResetSession } })).status, 401);
+
+    assert.equal((await send('register', { email: rateLimitEmail, fullName: 'Synthetic Rate Limit', password: 'test-only-password-2026' })).response.status, 201);
     // The resend budget is per client IP, shared across accounts; the first account
     // already used two requests, leaving three successful requests in this window.
-    for (let attempt = 0; attempt < 3; attempt += 1) assert.equal((await send('resend-verification', { email: rateLimitEmail })).response.status, 202);
+    for (let attempt = 0; attempt < 3; attempt += 1) assert.equal((await send('resend-verification', { email: rateLimitEmail })).response.status, 200);
     const limited = await send('resend-verification', { email: rateLimitEmail });
     assert.equal(limited.response.status, 429);
     assert.equal(deliveryCounts.get(rateLimitEmail), 4);
@@ -260,6 +314,7 @@ test('MySQL registration, verification, resend, token expiry, auth, and rate lim
       const ids = users.map(({ id }) => id);
       if (!ids.length) return;
       await tx.emailVerificationToken.deleteMany({ where: { userId: { in: ids } } });
+      await tx.passwordResetToken.deleteMany({ where: { userId: { in: ids } } });
       await tx.session.deleteMany({ where: { userId: { in: ids } } });
       await tx.user.deleteMany({ where: { id: { in: ids } } });
     });
@@ -289,10 +344,10 @@ test('MySQL-backed HTTP workflow covers account verification through organizatio
   };
   const signUpAndVerify = async (email, fullName) => {
     const registration = await send('/api/v1/auth/register', { method: 'POST', body: { email, fullName, password: 'test-only-password-2026' } });
-    assert.equal(registration.response.status, 202);
+    assert.equal(registration.response.status, 201);
     const staleToken = new URL(submittedEmails.get(email)).searchParams.get('token');
     assert.ok(staleToken);
-    assert.equal((await send('/api/v1/auth/resend-verification', { method: 'POST', body: { email } })).response.status, 202);
+    assert.equal((await send('/api/v1/auth/resend-verification', { method: 'POST', body: { email } })).response.status, 200);
     const verificationToken = new URL(submittedEmails.get(email)).searchParams.get('token');
     assert.notEqual(verificationToken, staleToken);
     assert.equal((await send('/api/v1/auth/verify-email', { method: 'POST', body: { token: staleToken } })).response.status, 400);
