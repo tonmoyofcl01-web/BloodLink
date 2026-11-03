@@ -1,7 +1,18 @@
+# Dependencies
 node_modules/
 .npm-cache/
+
+# Build files
 client/dist/
-server/.env
+server/dist/
+
+# Environment variables and secrets
 .env
+server/.env
+admin_account.txt
+
+# Testing
 coverage/
+
+# Logs
 npm-debug.log*
