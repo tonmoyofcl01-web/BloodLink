@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import RequestWorkspace from './features/requests/RequestWorkspace.jsx';
 import DonorDiscovery from './features/discovery/DonorDiscovery.jsx';
+import MyOpportunities from './features/donors/MyOpportunities.jsx';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:4000/api/v1';
 const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
@@ -96,6 +97,7 @@ function UserWorkspace({ user, onLogout }) {
     ['profile', 'Donor Profile'],
     ['requests', 'Blood Requests'],
     ['discovery', 'Donor Discovery'],
+    ['opportunities', 'My Opportunities'],
   ];
   return <div className="mx-auto mt-6 max-w-6xl">
     <header className="mb-6 flex flex-wrap items-center justify-between gap-4">
@@ -105,7 +107,7 @@ function UserWorkspace({ user, onLogout }) {
     <nav aria-label="BloodLink workspace" className="mb-6 flex gap-2 overflow-x-auto rounded-2xl bg-slate-200 p-1.5 dark:bg-slate-900">
       {navItems.map(([value, label]) => <button key={value} onClick={() => setView(value)} aria-current={view === value ? 'page' : undefined} className={`whitespace-nowrap rounded-xl px-4 py-2.5 text-sm font-semibold transition ${view === value ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white' : 'text-slate-600 hover:bg-white/60 dark:text-slate-300 dark:hover:bg-slate-800'}`}>{label}</button>)}
     </nav>
-    {view === 'profile' ? <DonorManager user={user} /> : view === 'requests' ? <RequestWorkspace /> : <DonorDiscovery />}
+    {view === 'profile' ? <DonorManager user={user} /> : view === 'requests' ? <RequestWorkspace /> : view === 'discovery' ? <DonorDiscovery /> : <MyOpportunities />}
   </div>;
 }
 

@@ -6,6 +6,7 @@
 - Local database setup completed for Milestone 1 on 2026-11-03.
 - Milestone 2: donor profiles and explicit discovery consent.
 - Milestone 3: private emergency blood requests and consent-filtered donor discovery.
+- Milestone 4: smart candidate matching, donor opportunities and responses, requester match summaries.
 
 ## Changed files
 
@@ -16,6 +17,7 @@
 - Database follow-up: root and server `test:db` scripts; database integration tests use read queries and roll back their synthetic profile lifecycle transaction.
 - Milestone 2: `server/prisma/migrations/20261103020000_donor_profiles/migration.sql`, `server/prisma/seed.js`, donor API routes/tests, updated Prisma schema, `client/src/App.jsx`, Tailwind dark mode, and updated package scripts/README.
 - Milestone 3: `server/prisma/migrations/20261103030000_blood_requests/migration.sql`, request/discovery API routes and tests, MySQL integration coverage, request/discovery UI components, app navigation, and updated package test scripts.
+- Milestone 4: additive migration `server/prisma/migrations/20261103040000_smart_matching/migration.sql`, matching service and tests, donor opportunity API/UI and tests, request match summary API/UI and tests, MySQL rollback integration coverage, Prisma schema and test scripts.
 - Environment: `server/.env` was read for validation and left unchanged.
 
 ## Tests and checks
@@ -39,7 +41,11 @@
 - `npm run build`: passed for the request and donor discovery interface.
 - Prisma validation and client generation: passed with the Milestone 3 schema.
 - `npm audit`: 3 high severity reports remain in Prisma 6 CLI's transitive `deepmerge-ts` dependency; npm only offers a breaking Prisma 7 upgrade.
+- Milestone 4: `npm run db:generate` and Prisma schema validation passed; `npm run db:migrate` applied `20261103040000_smart_matching` additively to MySQL 8.0.46.
+- Milestone 4: `npm test` passed, 22 tests covering authentication/donor/request regressions, ranking and fair rotation, duplicate prevention, request and donor ownership, consent/availability rechecks, response lifecycle, and privacy.
+- Milestone 4: `npm run test:db` passed, 2 MySQL integration tests; synthetic matching rows were created inside a transaction and rolled back. Verified `request_matches` and all four applied migrations.
+- Milestone 4: `npm run build` passed for the React/Vite client.
 
 ## Next task
 
-- Wait for approval before beginning Milestone 4.
+- Wait for approval before beginning Milestone 5.

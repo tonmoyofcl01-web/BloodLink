@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { env } from '../config/env.js';
+import { generatePotentialMatches } from '../modules/matching/service.js';
 
 test('configured MySQL database is reachable and all migrations are applied', async () => {
   const prisma = new PrismaClient();
@@ -15,13 +16,13 @@ test('configured MySQL database is reachable and all migrations are applied', as
 
     const rows = await prisma.$queryRaw`SELECT TABLE_NAME AS tableName FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'`;
     const tables = new Set(rows.map((row) => row.tableName));
-    for (const table of ['users', 'sessions', 'email_verification_tokens', 'admin_accounts', 'blood_groups', 'donor_profiles', 'blood_requests', '_prisma_migrations']) {
+    for (const table of ['users', 'sessions', 'email_verification_tokens', 'admin_accounts', 'blood_groups', 'donor_profiles', 'blood_requests', 'request_matches', '_prisma_migrations']) {
       assert.ok(tables.has(table), `Expected table ${table} to exist`);
     }
     console.info(`[database check] tables: ${[...tables].sort().join(', ')}`);
 
-    const migrations = await prisma.$queryRaw`SELECT migration_name AS migrationName, finished_at AS finishedAt, rolled_back_at AS rolledBackAt FROM _prisma_migrations WHERE migration_name IN ('20261103000000_initial', '20261103020000_donor_profiles', '20261103030000_blood_requests') AND finished_at IS NOT NULL AND rolled_back_at IS NULL`;
-    assert.equal(migrations.length, 3);
+    const migrations = await prisma.$queryRaw`SELECT migration_name AS migrationName, finished_at AS finishedAt, rolled_back_at AS rolledBackAt FROM _prisma_migrations WHERE migration_name IN ('20261103000000_initial', '20261103020000_donor_profiles', '20261103030000_blood_requests', '20261103040000_smart_matching') AND finished_at IS NOT NULL AND rolled_back_at IS NULL`;
+    assert.equal(migrations.length, 4);
     const unresolvedFailures = await prisma.$queryRaw`SELECT COUNT(*) AS count FROM _prisma_migrations WHERE finished_at IS NULL AND rolled_back_at IS NULL`;
     assert.equal(Number(unresolvedFailures[0].count), 0);
   } finally {
@@ -92,8 +93,16 @@ test('blood groups, donor discovery filters, and request lifecycle work transact
 
       const bloodRequest = await tx.bloodRequest.create({ data: {
         requesterUserId: user.id, bloodGroupId: byCode.get('O+'), unitsRequested: 2,
-        division: 'North', district: 'Metro', area: 'East', urgency: 'URGENT', neededAt: new Date(),
+        division: 'North', district: 'Metro', area: 'East', urgency: 'URGENT', neededAt: new Date(Date.now() + 60_000),
       } });
+      const generated = await generatePotentialMatches(tx, bloodRequest.id);
+      assert.equal(generated.candidates, 3);
+      assert.equal(generated.created, 3);
+      const repeated = await generatePotentialMatches(tx, bloodRequest.id);
+      assert.equal(repeated.created, 0);
+      const persistedMatches = await tx.requestMatch.findMany({ where: { requestId: bloodRequest.id }, select: { locationRank: true, matchStatus: true } });
+      assert.deepEqual(persistedMatches.map((match) => match.locationRank).sort((a, b) => b - a), [3, 2, 1]);
+      assert.ok(persistedMatches.every((match) => match.matchStatus === 'NOTIFIED'));
       const paused = await tx.bloodRequest.updateMany({ where: { id: bloodRequest.id, requesterUserId: user.id, status: 'OPEN' }, data: { status: 'PAUSED' } });
       assert.equal(paused.count, 1);
       throw rollback;

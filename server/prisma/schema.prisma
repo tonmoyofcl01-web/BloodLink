@@ -30,6 +30,16 @@ enum BloodRequestStatus {
   PAUSED
   CANCELLED
   CLOSED
+  EXPIRED
+}
+
+enum RequestMatchStatus {
+  NOTIFIED
+  ACCEPTED
+  DECLINED
+  WITHDRAWN
+  INVALIDATED
+  CLOSED
 }
 
 model User {
@@ -79,6 +89,7 @@ model DonorProfile {
   updatedAt             DateTime                @updatedAt @map("updated_at") @db.DateTime(3)
   user                  User                    @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   bloodGroup            BloodGroup              @relation(fields: [bloodGroupId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  requestMatches        RequestMatch[]
 
   @@index([bloodGroupId, availabilityStatus, discoveryConsentAt], map: "donor_profiles_blood_group_avail_consent_idx")
   @@index([division, district, area])
@@ -103,11 +114,35 @@ model BloodRequest {
   updatedAt        DateTime            @updatedAt @map("updated_at") @db.DateTime(3)
   requester        User                @relation(fields: [requesterUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   bloodGroup       BloodGroup          @relation(fields: [bloodGroupId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  matches          RequestMatch[]
 
   @@index([requesterUserId, createdAt])
   @@index([status, neededAt, createdAt])
   @@index([bloodGroupId, division, district, area, status])
   @@map("blood_requests")
+}
+
+model RequestMatch {
+  id                      String            @id @default(uuid()) @db.Char(36)
+  requestId               String            @map("request_id") @db.Char(36)
+  donorProfileId          String            @map("donor_profile_id") @db.Char(36)
+  matchStatus             RequestMatchStatus @default(NOTIFIED) @map("match_status")
+  locationRank            Int               @map("location_rank") @db.UnsignedTinyInt
+  priorNotificationCount  Int               @map("prior_notification_count") @db.UnsignedInt
+  lastPriorNotifiedAt     DateTime?         @map("last_prior_notified_at") @db.DateTime(3)
+  rankFactors             Json              @map("rank_factors")
+  notifiedAt              DateTime          @map("notified_at") @db.DateTime(3)
+  respondedAt             DateTime?         @map("responded_at") @db.DateTime(3)
+  createdAt               DateTime          @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt               DateTime          @updatedAt @map("updated_at") @db.DateTime(3)
+  request                 BloodRequest      @relation(fields: [requestId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  donorProfile            DonorProfile      @relation(fields: [donorProfileId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([requestId, donorProfileId], map: "request_matches_request_donor_key")
+  @@index([requestId, matchStatus])
+  @@index([donorProfileId, matchStatus, createdAt])
+  @@index([donorProfileId, notifiedAt])
+  @@map("request_matches")
 }
 
 model Session {

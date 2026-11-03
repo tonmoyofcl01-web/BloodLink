@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:4000/api/v1';
 const GROUPS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
-const STATUSES = ['OPEN', 'PAUSED', 'CANCELLED', 'CLOSED'];
+const STATUSES = ['OPEN', 'PAUSED', 'CANCELLED', 'CLOSED', 'EXPIRED'];
 
 const emptyRequest = () => ({ bloodGroup: 'O+', unitsRequested: '1', division: '', district: '', area: '', urgency: 'URGENT', neededAt: toLocalDateTime(new Date(Date.now() + 60 * 60 * 1000)), facilityName: '', publicNote: '' });
 
@@ -153,6 +153,7 @@ export default function RequestWorkspace() {
                 <Detail label="Public note" value={selected.publicNote || 'None'} />
               </dl>
               <p className="mt-6 rounded-xl border-l-4 border-rose-600 bg-rose-50 p-4 text-sm leading-6 text-rose-900 dark:bg-rose-950/40 dark:text-rose-100">Donor discovery identifies potential candidates only. Qualified medical professionals must verify donor suitability and blood compatibility.</p>
+              <RequestMatches key={`${selected.id}-${selected.updatedAt}`} request={selected} />
               {canManage && <div className="mt-6 flex flex-wrap gap-2">
                 <button onClick={() => { setEditing(true); setSection('mine'); }} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white dark:bg-teal-700">Edit request</button>
                 {selected.status === 'OPEN' ? <button onClick={() => changeStatus('PAUSED')} disabled={loading} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold dark:border-slate-700">Pause</button> : <button onClick={() => changeStatus('OPEN')} disabled={loading} className="rounded-lg border border-teal-300 px-4 py-2 text-sm font-semibold text-teal-800 dark:border-teal-800 dark:text-teal-200">Reopen</button>}
@@ -191,10 +192,49 @@ function RequestForm({ initial, saving, onSubmit, onCancel }) {
 }
 
 function StatusBadge({ status }) {
-  const color = { OPEN: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200', PAUSED: 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200', CANCELLED: 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300', CLOSED: 'bg-slate-900 text-white dark:bg-slate-700' }[status];
+  const color = { OPEN: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200', PAUSED: 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200', CANCELLED: 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300', CLOSED: 'bg-slate-900 text-white dark:bg-slate-700', EXPIRED: 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200' }[status];
   return <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${color}`}>{status}</span>;
 }
 
 function Detail({ label, value }) {
   return <div><dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</dt><dd className="mt-1 break-words font-medium">{value}</dd></div>;
+}
+
+function RequestMatches({ request }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [reload, setReload] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    fetch(`${API}/requests/${request.id}/matches`, { credentials: 'include' })
+      .then(async (response) => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error?.message || 'Could not load match responses.');
+        if (active) setData(result);
+      })
+      .catch((reason) => { if (active) setError(reason.message); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [request.id, reload]);
+
+  return <section className="mt-7 border-t border-slate-200 pt-6 dark:border-slate-800">
+    <div className="flex items-center justify-between gap-3"><div><h4 className="text-lg font-bold">Matches</h4><p className="text-sm text-slate-500">Anonymous candidate and response summary</p></div><button onClick={() => setReload((value) => value + 1)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold dark:border-slate-700">Refresh</button></div>
+    {loading ? <p className="mt-4 text-sm text-slate-500">Loading match responses…</p> : error ? <p role="alert" className="mt-4 rounded-lg bg-rose-50 p-3 text-sm text-rose-800 dark:bg-rose-950 dark:text-rose-200">{error}</p> : <>
+      <dl className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
+        <MatchCount label="Potential" value={data.counts.potentialMatches} />
+        <MatchCount label="Notified" value={data.counts.notified} />
+        <MatchCount label="Accepted" value={data.counts.accepted} />
+        <MatchCount label="Declined" value={data.counts.declined} />
+        <MatchCount label="Pending" value={data.counts.pending} />
+      </dl>
+      {data.matches.length === 0 ? <p className="mt-4 text-sm text-slate-500">No potential candidates have been generated yet.</p> : <ul className="mt-4 space-y-2">{data.matches.map((match, index) => <li key={`${match.locationMatch}-${match.status}-${index}`} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm dark:bg-slate-800"><span>Anonymous candidate · {match.locationMatch.toLowerCase()} level</span><span className="font-semibold">{match.status.replaceAll('_', ' ')}</span></li>)}</ul>}
+      <p className="mt-4 text-xs leading-5 text-slate-500">{data.medicalNotice}</p>
+    </>}
+  </section>;
+}
+
+function MatchCount({ label, value }) {
+  return <div className="rounded-xl bg-slate-100 p-3 dark:bg-slate-800"><dt className="text-xs text-slate-500">{label}</dt><dd className="mt-1 text-xl font-bold">{value}</dd></div>;
 }

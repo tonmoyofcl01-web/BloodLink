@@ -2,6 +2,7 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { medicalNotice } from '../requests/routes.js';
+import { expireRequestIfNeeded, invalidatePendingDonorMatches } from '../matching/service.js';
 
 const bloodGroupCodes = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 const bloodGroupSchema = z.enum(bloodGroupCodes);
@@ -15,6 +16,11 @@ const profileFields = {
 const profileSchema = z.object(profileFields).strict();
 const availabilitySchema = z.object({ status: z.enum(['AVAILABLE', 'PAUSED']) }).strict();
 const consentSchema = z.object({ consented: z.boolean() }).strict();
+const opportunityQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(1000).default(1),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+}).strict();
+const responseSchema = z.object({ action: z.enum(['ACCEPT', 'DECLINE', 'WITHDRAW']) }).strict();
 const discoverySchema = z.object({
   bloodGroup: bloodGroupSchema,
   division: z.string().trim().min(1).max(80),
@@ -98,6 +104,102 @@ export function createDonorRouter({ prisma, requireAuth }) {
     } catch (error) { next(error); }
   });
 
+  router.get('/me/opportunities', async (req, res, next) => {
+    try {
+      const { page, limit } = opportunityQuerySchema.parse(req.query);
+      const donor = await prisma.donorProfile.findUnique({ where: { userId: req.auth.userId }, select: { id: true } });
+      if (!donor) return res.json({ opportunities: [], pagination: { page, limit, total: 0, totalPages: 0 }, medicalNotice });
+      const where = { donorProfileId: donor.id };
+      const [rows, total] = await Promise.all([
+        prisma.requestMatch.findMany({
+          where,
+          include: { request: { include: { bloodGroup: { select: { code: true } } } } },
+          orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+          skip: (page - 1) * limit,
+          take: limit,
+        }),
+        prisma.requestMatch.count({ where }),
+      ]);
+      const now = new Date();
+      for (const row of rows) {
+        if (row.matchStatus !== 'NOTIFIED') continue;
+        if (row.request.neededAt <= now) await expireRequestIfNeeded(prisma, row.requestId, now);
+        if (row.request.status !== 'OPEN' && row.request.status !== 'PAUSED') {
+          await prisma.requestMatch.updateMany({ where: { id: row.id, matchStatus: 'NOTIFIED' }, data: { matchStatus: 'CLOSED', respondedAt: now } });
+        }
+      }
+      res.json({
+        opportunities: rows.map((row) => {
+          const requestClosed = row.request.status !== 'OPEN' && row.request.status !== 'PAUSED'
+            || row.request.neededAt <= now;
+          return {
+          id: row.id,
+          status: requestClosed && row.matchStatus === 'NOTIFIED' ? 'CLOSED' : row.matchStatus,
+          requestStatus: row.request.status === 'OPEN' && row.request.neededAt <= now ? 'EXPIRED' : row.request.status,
+          bloodGroup: row.request.bloodGroup.code,
+          unitsRequested: row.request.unitsRequested,
+          urgency: row.request.urgency,
+          location: { division: row.request.division, district: row.request.district },
+          neededAt: row.request.neededAt,
+          notifiedAt: row.notifiedAt,
+          respondedAt: row.respondedAt,
+        }; }),
+        pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+        medicalNotice,
+      });
+    } catch (error) { next(error); }
+  });
+
+  router.post('/me/opportunities/:matchId/respond', async (req, res, next) => {
+    try {
+      const matchId = z.string().uuid().parse(req.params.matchId);
+      const { action } = responseSchema.parse(req.body);
+      const result = await prisma.$transaction(async (tx) => {
+        const donor = await tx.donorProfile.findUnique({
+          where: { userId: req.auth.userId },
+          select: { id: true, availabilityStatus: true, discoveryConsentAt: true, user: { select: { status: true, deletedAt: true } } },
+        });
+        if (!donor) return { error: 'PROFILE_NOT_FOUND', status: 404 };
+        const match = await tx.requestMatch.findFirst({
+          where: { id: matchId, donorProfileId: donor.id },
+          include: { request: { select: { id: true, status: true, neededAt: true } } },
+        });
+        if (!match) return { error: 'OPPORTUNITY_NOT_FOUND', status: 404 };
+        const now = new Date();
+        if (match.request.neededAt <= now && ['OPEN', 'PAUSED'].includes(match.request.status)) {
+          await expireRequestIfNeeded(tx, match.requestId, now);
+          return { error: 'REQUEST_EXPIRED', status: 409 };
+        }
+        if (match.request.status !== 'OPEN') return { error: 'REQUEST_NOT_OPEN', status: 409 };
+
+        if (action === 'WITHDRAW') {
+          if (match.matchStatus !== 'ACCEPTED') return { error: 'RESPONSE_NOT_WITHDRAWABLE', status: 409 };
+          const updated = await tx.requestMatch.updateMany({
+            where: { id: matchId, donorProfileId: donor.id, matchStatus: 'ACCEPTED' },
+            data: { matchStatus: 'WITHDRAWN', respondedAt: now },
+          });
+          if (updated.count !== 1) return { error: 'RESPONSE_ALREADY_CHANGED', status: 409 };
+        } else {
+          if (match.matchStatus !== 'NOTIFIED') return { error: 'OPPORTUNITY_ALREADY_ANSWERED', status: 409 };
+          if (!donor.discoveryConsentAt || donor.availabilityStatus !== 'AVAILABLE' || donor.user.status !== 'ACTIVE' || donor.user.deletedAt) {
+            await tx.requestMatch.updateMany({ where: { id: matchId, matchStatus: 'NOTIFIED' }, data: { matchStatus: 'INVALIDATED', respondedAt: now } });
+            return { error: 'DONOR_NO_LONGER_ELIGIBLE', status: 409 };
+          }
+          const nextStatus = action === 'ACCEPT' ? 'ACCEPTED' : 'DECLINED';
+          const updated = await tx.requestMatch.updateMany({
+            where: { id: matchId, donorProfileId: donor.id, matchStatus: 'NOTIFIED' },
+            data: { matchStatus: nextStatus, respondedAt: now },
+          });
+          if (updated.count !== 1) return { error: 'OPPORTUNITY_ALREADY_ANSWERED', status: 409 };
+        }
+        const updatedMatch = await tx.requestMatch.findFirst({ where: { id: matchId, donorProfileId: donor.id }, select: { matchStatus: true, respondedAt: true } });
+        return { match: updatedMatch };
+      }, { isolationLevel: 'Serializable' });
+      if (result.error) return res.status(result.status).json({ error: { code: result.error, message: 'This opportunity can no longer be changed.' } });
+      res.json({ match: result.match });
+    } catch (error) { next(error); }
+  });
+
   router.get('/me', async (req, res, next) => {
     try {
       const profile = await prisma.donorProfile.findUnique({ where: { userId: req.auth.userId }, select: profileSelect });
@@ -152,7 +254,11 @@ export function createDonorRouter({ prisma, requireAuth }) {
       const { status } = availabilitySchema.parse(req.body);
       const existing = await prisma.donorProfile.findUnique({ where: { userId: req.auth.userId }, select: { id: true } });
       if (!existing) return res.status(404).json({ error: { code: 'PROFILE_NOT_FOUND', message: 'Donor profile not found.' } });
-      const profile = await prisma.donorProfile.update({ where: { userId: req.auth.userId }, data: { availabilityStatus: status }, select: profileSelect });
+      const profile = await prisma.$transaction(async (tx) => {
+        const updated = await tx.donorProfile.update({ where: { userId: req.auth.userId }, data: { availabilityStatus: status }, select: profileSelect });
+        if (status === 'PAUSED') await invalidatePendingDonorMatches(tx, existing.id);
+        return updated;
+      }, { isolationLevel: 'Serializable' });
       res.json({ profile: serializeProfile(profile) });
     } catch (error) { next(error); }
   });
@@ -163,15 +269,19 @@ export function createDonorRouter({ prisma, requireAuth }) {
       const existing = await prisma.donorProfile.findUnique({ where: { userId: req.auth.userId }, select: { id: true, consentVersion: true } });
       if (!existing) return res.status(404).json({ error: { code: 'PROFILE_NOT_FOUND', message: 'Donor profile not found.' } });
       const changedAt = new Date();
-      const profile = await prisma.donorProfile.update({
-        where: { userId: req.auth.userId },
-        data: {
-          discoveryConsentAt: consented ? changedAt : null,
-          consentVersion: consented ? CONSENT_VERSION : existing.consentVersion,
-          consentUpdatedAt: changedAt,
-        },
-        select: profileSelect,
-      });
+      const profile = await prisma.$transaction(async (tx) => {
+        const updated = await tx.donorProfile.update({
+          where: { userId: req.auth.userId },
+          data: {
+            discoveryConsentAt: consented ? changedAt : null,
+            consentVersion: consented ? CONSENT_VERSION : existing.consentVersion,
+            consentUpdatedAt: changedAt,
+          },
+          select: profileSelect,
+        });
+        if (!consented) await invalidatePendingDonorMatches(tx, existing.id);
+        return updated;
+      }, { isolationLevel: 'Serializable' });
       res.json({ profile: serializeProfile(profile) });
     } catch (error) { next(error); }
   });

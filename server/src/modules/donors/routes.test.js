@@ -22,7 +22,7 @@ function donorPrisma({ ownerId = 'owner-user', initialProfile = null } = {}) {
   let profile = initialProfile;
   let idCounter = 0;
   const groupByCode = new Map(bloodGroups.map((code, index) => [code, { id: index + 1, code }]));
-  return {
+  const prisma = {
     session: { findUnique: async () => ({ userId: ownerId, revokedAt: null, expiresAt: new Date(Date.now() + 60_000), user: { status: 'ACTIVE', deletedAt: null, adminAccount: null } }) },
     bloodGroup: { findUnique: async ({ where }) => groupByCode.get(where.code) || null },
     donorProfile: {
@@ -49,7 +49,10 @@ function donorPrisma({ ownerId = 'owner-user', initialProfile = null } = {}) {
         && (!where.district || profile.district === where.district) && (!where.area || profile.area === where.area)
         && profile.availabilityStatus === where.availabilityStatus && profile.discoveryConsentAt ? 1 : 0,
     },
+    $transaction: async (operation) => operation(prisma),
+    requestMatch: { updateMany: async () => ({ count: 0 }) },
   };
+  return prisma;
 }
 
 test('donor profile creation is optional, private, and starts paused without discovery consent', async () => {
