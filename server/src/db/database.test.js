@@ -387,6 +387,12 @@ test('MySQL-backed HTTP workflow covers account verification through organizatio
     const opportunityId = opportunities.data.opportunities[0].id;
     assert.ok(opportunityId);
 
+    const clearedDonorInbox = await send('/api/v1/notifications', { method: 'DELETE', email: donorEmail });
+    assert.deepEqual(clearedDonorInbox.data, { deleted: 1 });
+    assert.equal((await send('/api/v1/notifications', { email: donorEmail })).data.unreadCount, 0);
+    assert.equal((await send('/api/v1/donors/me/opportunities', { email: donorEmail })).data.opportunities.some((item) => item.id === opportunityId), true);
+    assert.equal((await send(`/api/v1/requests/${requestId}/matches`, { email: requesterEmail })).data.counts.pending, 1);
+
     let response = await send(`/api/v1/donors/me/opportunities/${opportunityId}/respond`, { method: 'POST', email: donorEmail, body: { action: 'ACCEPT' } });
     assert.equal(response.response.status, 200);
     const matchSummary = await send(`/api/v1/requests/${requestId}/matches`, { email: requesterEmail });

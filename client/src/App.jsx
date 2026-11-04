@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { runVerificationOnce } from './auth/verification-once.js';
 import { runSubmissionOnce } from './auth/submission-lock.js';
+import { authRequestError, readApiJson } from './auth/api-response.js';
 import { canShowResendVerification, verificationUiState } from './auth/resend-state.js';
 import RequestWorkspace from './features/requests/RequestWorkspace.jsx';
 import DonorDiscovery from './features/discovery/DonorDiscovery.jsx';
@@ -52,17 +53,22 @@ export default function App() {
         fetch(`${API}/auth/verify-email`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }),
         }).then(async (response) => {
-          const data = await response.json();
+          const data = await readApiJson(response);
           if (!response.ok) throw new Error(data.error?.message || 'Verification failed.');
           setMessage('Email verified. You can now sign in.');
           window.history.replaceState({}, '', '/');
-        }).catch((error) => setMessage(error.message));
+        }).catch((error) => setMessage(authRequestError(error, 'email verification')));
       });
     }
     fetch(`${API}/auth/me`, { credentials: 'include' })
-      .then(async (response) => response.ok ? response.json() : null)
+      .then(async (response) => {
+        if (response.status === 401) return null;
+        const data = await readApiJson(response);
+        if (!response.ok) throw new Error(apiErrorMessage(response, data, 'Could not check your sign-in status.'));
+        return data;
+      })
       .then((data) => { if (data?.user) setUser(data.user); })
-      .catch(() => {});
+      .catch((error) => setMessage(authRequestError(error, 'sign-in status check')));
   }, []);
 
   async function submit(event) {
@@ -86,7 +92,7 @@ export default function App() {
         const response = await fetch(`${API}/auth/${endpoint}`, {
           method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
         });
-        const data = await response.json();
+        const data = await readApiJson(response);
         if (!response.ok) {
           const verificationState = verificationUiState({ mode, ok: false, error: data.error, email: body.email });
           setVerificationEmail(verificationState.resendEmail);
@@ -102,7 +108,7 @@ export default function App() {
           window.history.replaceState({}, '', '/');
         }
         setMessage(mode === 'login' ? 'Signed in successfully.' : data.message);
-      } catch (error) { setMessage(error.message); }
+      } catch (error) { setMessage(authRequestError(error, mode === 'register' ? 'signup' : mode === 'login' ? 'sign-in' : 'account')); }
       finally { setBusy(false); }
     });
   }
@@ -114,14 +120,14 @@ export default function App() {
       const resendEmail = verificationEmail || authEmail;
       try {
         const response = await fetch(`${API}/auth/resend-verification`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: resendEmail }) });
-        const data = await response.json();
+        const data = await readApiJson(response);
         if (!response.ok) {
           if (['ALREADY_VERIFIED', 'ACCOUNT_NOT_FOUND', 'ACCOUNT_UNAVAILABLE'].includes(data.error?.code)) setVerificationEmail('');
           if (data.error?.code === 'ALREADY_VERIFIED') setMode('login');
           throw new Error(apiErrorMessage(response, data, 'Could not resend verification instructions.'));
         }
         setMessage(data.message);
-      } catch (error) { setMessage(error.message); }
+      } catch (error) { setMessage(authRequestError(error, 'verification email resend')); }
       finally { setResendBusy(false); }
     });
   }

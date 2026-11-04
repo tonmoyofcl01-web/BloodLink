@@ -34,6 +34,13 @@ export function createNotificationRouter({ prisma, requireAuth }) {
     } catch (error) { next(error); }
   });
 
+  router.delete('/', async (req, res, next) => {
+    try {
+      const result = await prisma.notification.deleteMany({ where: { userId: req.auth.userId } });
+      res.json({ deleted: result.count });
+    } catch (error) { next(error); }
+  });
+
   router.patch('/:id/read', async (req, res, next) => {
     try {
       const id = z.string().uuid().parse(req.params.id);

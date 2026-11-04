@@ -70,6 +70,9 @@ export default function NotificationsPage({ onNavigate, onUnreadCountChange = ()
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [openingId, setOpeningId] = useState(null);
+  const [clearDialogOpen, setClearDialogOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const clearRef = useRef(false);
   const openingRef = useRef(false);
 
   async function load(nextPage = page) {
@@ -85,9 +88,33 @@ export default function NotificationsPage({ onNavigate, onUnreadCountChange = ()
   useEffect(() => { load(page); }, [page]);
 
   async function markAllRead() {
-    const response = await fetch(`${API}/notifications/read-all`, { method: 'PATCH', credentials: 'include' });
-    if (!response.ok) { setError('Could not mark notifications as read.'); return; }
-    setMessage('All notifications marked as read.'); await load(page);
+    if (loading || unreadCount === 0) return;
+    setError(''); setMessage('');
+    try {
+      const response = await fetch(`${API}/notifications/read-all`, { method: 'PATCH', credentials: 'include' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error?.message || 'Could not mark notifications as read.');
+      setMessage('All notifications marked as read.'); await load(page);
+    } catch (reason) { setError(reason.message || 'Could not mark notifications as read.'); }
+  }
+
+  async function clearAll() {
+    if (clearRef.current || loading) return;
+    clearRef.current = true;
+    setClearing(true); setError(''); setMessage('');
+    try {
+      const response = await fetch(`${API}/notifications`, { method: 'DELETE', credentials: 'include' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error?.message || 'Could not clear notifications.');
+      setItems([]);
+      setPagination({ page: 1, totalPages: 1, total: 0 });
+      setUnreadCount(0);
+      onUnreadCountChange(0);
+      setPage(1);
+      setClearDialogOpen(false);
+      setMessage(data.deleted ? 'All notifications cleared.' : 'There were no notifications to clear.');
+    } catch (reason) { setError(reason.message || 'Could not clear notifications.'); }
+    finally { clearRef.current = false; setClearing(false); }
   }
 
   async function openItem(item) {
@@ -110,7 +137,8 @@ export default function NotificationsPage({ onNavigate, onUnreadCountChange = ()
   }
 
   return <section className="space-y-5">
-    <header className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-sm font-semibold uppercase tracking-[0.18em] text-teal-700 dark:text-teal-300">Your updates</p><h2 className="mt-2 text-2xl font-bold">Notifications</h2><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{unreadCount} unread notifications</p></div><button onClick={markAllRead} disabled={unreadCount === 0 || loading} className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold disabled:opacity-50 dark:border-slate-700">Mark all as read</button></header>
+    <header className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-sm font-semibold uppercase tracking-[0.18em] text-teal-700 dark:text-teal-300">Your updates</p><h2 className="mt-2 text-2xl font-bold">Notifications</h2><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{unreadCount} unread notifications</p></div><div className="flex flex-wrap gap-2"><button onClick={markAllRead} disabled={unreadCount === 0 || loading || clearing || openingId !== null} className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold disabled:opacity-50 dark:border-slate-700">Mark all as read</button><button onClick={() => setClearDialogOpen(true)} disabled={pagination.total === 0 || loading || clearing || openingId !== null} className="rounded-xl border border-rose-300 px-4 py-2 text-sm font-semibold text-rose-700 disabled:opacity-50 dark:border-rose-900 dark:text-rose-300">Clear all notifications</button></div></header>
+    {clearDialogOpen && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/50 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget && !clearing) setClearDialogOpen(false); }}><section role="alertdialog" aria-modal="true" aria-labelledby="clear-notifications-title" aria-describedby="clear-notifications-description" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900"><h3 id="clear-notifications-title" className="text-lg font-bold">Clear all notifications?</h3><p id="clear-notifications-description" className="mt-2 text-sm text-slate-600 dark:text-slate-300">This permanently removes the notifications in your inbox. Your requests, donor profile, organization, and account will not be affected.</p><div className="mt-6 flex justify-end gap-3"><button type="button" disabled={clearing} onClick={() => setClearDialogOpen(false)} className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold disabled:opacity-50 dark:border-slate-700">Cancel</button><button type="button" disabled={clearing} onClick={clearAll} className="rounded-xl bg-rose-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{clearing ? 'Clearing…' : 'Clear notifications'}</button></div></section></div>}
     {message && <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100">{message}</p>}
     {error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800 dark:bg-rose-950 dark:text-rose-200">{error}</p>}
     {loading && items.length === 0 ? <p className="rounded-2xl bg-white p-8 text-center text-slate-500 shadow-sm dark:bg-slate-900">Loading notifications…</p> : items.length === 0 ? <div className="rounded-2xl bg-white p-10 text-center shadow-sm dark:bg-slate-900"><h3 className="font-bold">No notifications yet</h3><p className="mt-2 text-sm text-slate-500">Important request and organization updates will appear here.</p></div> : <ul className="divide-y divide-slate-100 rounded-2xl bg-white shadow-sm ring-1 ring-slate-200 dark:divide-slate-800 dark:bg-slate-900 dark:ring-slate-800">{items.map((item) => <li key={item.id}><button disabled={openingId !== null} onClick={() => openItem(item)} className="flex w-full gap-4 p-4 text-left transition hover:bg-slate-50 disabled:cursor-wait disabled:opacity-60 dark:hover:bg-slate-800 sm:p-5"><span className="grid size-11 shrink-0 place-items-center rounded-full bg-teal-50 text-lg text-teal-800 dark:bg-teal-950 dark:text-teal-200" aria-hidden="true">{icons[item.type] || '•'}</span><span className="min-w-0 flex-1"><span className="flex items-center gap-2"><strong className="text-sm">{item.title}</strong>{!item.readAt && <i className="size-2 rounded-full bg-rose-600" aria-label="Unread" />}</span><span className="mt-1 block text-sm text-slate-600 dark:text-slate-300">{item.message}</span><time className="mt-2 block text-xs text-slate-500">{new Date(item.createdAt).toLocaleString()}</time></span></button></li>)}</ul>}

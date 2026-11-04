@@ -32,6 +32,11 @@ function notificationPrisma() {
         for (const item of found) Object.assign(item, data);
         return { count: found.length };
       },
+      deleteMany: async ({ where }) => {
+        const found = notifications.filter((item) => item.userId === where.userId);
+        for (const item of found) notifications.splice(notifications.indexOf(item), 1);
+        return { count: found.length };
+      },
       findFirst: async ({ where }) => notifications.find((item) => item.id === where.id && item.userId === where.userId) || null,
     },
     requestMatch: { findFirst: async ({ where }) => where.id === id2 && where.donorProfile.is.userId === 'user-one' ? { id: id2 } : null },
@@ -61,6 +66,21 @@ test('notifications are private to their owner, paginated, readable, and contain
     assert.deepEqual(await markAll.json(), { updated: 1 });
     const afterMarkAll = await fetch(`${base}/api/v1/notifications`, { headers });
     assert.equal((await afterMarkAll.json()).unreadCount, 0);
+  });
+});
+
+test('clearing notifications requires authentication and deletes only the signed-in user’s inbox entries', async () => {
+  const prisma = notificationPrisma();
+  await withServer(createApp({ prisma, env }), async (base) => {
+    const anonymous = await fetch(`${base}/api/v1/notifications`, { method: 'DELETE' });
+    assert.equal(anonymous.status, 401);
+    const headers = { cookie: 'bloodlink_session=one' };
+    const cleared = await fetch(`${base}/api/v1/notifications`, { method: 'DELETE', headers });
+    assert.deepEqual(await cleared.json(), { deleted: 2 });
+    assert.deepEqual(prisma.notifications.map((item) => item.userId), ['user-two']);
+    const repeated = await fetch(`${base}/api/v1/notifications`, { method: 'DELETE', headers });
+    assert.deepEqual(await repeated.json(), { deleted: 0 });
+    assert.deepEqual(prisma.notifications.map((item) => item.userId), ['user-two']);
   });
 });
 

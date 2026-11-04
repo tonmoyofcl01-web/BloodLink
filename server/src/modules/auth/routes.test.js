@@ -136,12 +136,13 @@ test('SMTP send failure is returned as a clear service error without revealing t
 test('login sets an HttpOnly cookie and logout revokes its server-side session', async () => {
   const passwordHash = await bcrypt.hash('correct horse battery', 4);
   let sessionData;
+  let sessionsCreated = 0;
   let revoked;
   const prisma = {
     user: { findUnique: async () => ({ id: 'user-id', email: 'person@example.com', fullName: 'Person', passwordHash, status: 'ACTIVE', deletedAt: null }) },
     session: {
       findUnique: async () => null,
-      create: async ({ data }) => { sessionData = data; },
+      create: async ({ data }) => { sessionData = data; sessionsCreated += 1; },
       updateMany: async ({ where, data }) => { revoked = { where, data }; },
     },
   };
@@ -158,11 +159,20 @@ test('login sets an HttpOnly cookie and logout revokes its server-side session',
     assert.equal(body.user.id, 'user-id');
     assert.equal('session' in body, false);
     assert.equal(typeof sessionData.secretHash, 'string');
+    const firstSessionData = sessionData;
+
+    const repeatedLogin = await fetch(`${base}/api/v1/auth/login`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'person@example.com', password: 'correct horse battery' }),
+    });
+    assert.equal(repeatedLogin.status, 200);
+    assert.equal((await repeatedLogin.json()).user.id, 'user-id');
+    assert.equal(sessionsCreated, 2);
 
     const rawCookie = cookie.split(';')[0];
     const logout = await fetch(`${base}/api/v1/auth/logout`, { method: 'POST', headers: { cookie: rawCookie } });
     assert.equal(logout.status, 204);
-    assert.equal(revoked.where.secretHash, sessionData.secretHash);
+    assert.equal(revoked.where.secretHash, firstSessionData.secretHash);
     assert.ok(revoked.data.revokedAt instanceof Date);
   });
 });
@@ -184,4 +194,34 @@ test('login identifies an unverified account only after its password is correct'
     assert.equal(correctPassword.status, 403);
     assert.equal((await correctPassword.json()).error.code, 'EMAIL_NOT_VERIFIED');
   });
+});
+
+
+test('database outages return a JSON 503 and the API continues serving requests', async () => {
+  let databaseAvailable = false;
+  const databaseError = new Error('connect ECONNREFUSED db.example:3306');
+  databaseError.errorCode = 'P1001';
+  const prisma = { user: { findUnique: async () => {
+    if (!databaseAvailable) throw databaseError;
+    return null;
+  } } };
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  try {
+    await withServer(createApp({ prisma, env }), async (base) => {
+      const request = () => fetch(`${base}/api/v1/auth/login`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'person@example.com', password: 'correct horse battery' }),
+      });
+      const unavailable = await request();
+      assert.equal(unavailable.status, 503);
+      assert.match(unavailable.headers.get('content-type'), /application\/json/);
+      assert.deepEqual(await unavailable.json(), { error: { code: 'DATABASE_UNAVAILABLE', message: 'The database is temporarily unavailable. Check the API server output for connection details, then retry.' } });
+
+      databaseAvailable = true;
+      const recovered = await request();
+      assert.equal(recovered.status, 401);
+      assert.equal((await recovered.json()).error.code, 'INVALID_CREDENTIALS');
+    });
+  } finally { console.error = originalConsoleError; }
 });
